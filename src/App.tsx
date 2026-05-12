@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { computeModel, fmt, fe, fp } from "./model";
 import type { InputsBien, ProfilInvestisseur, BienPatrimoine, ResultatsComplets } from "./types";
 import { DEFAULT_INPUTS, DEFAULT_PROFIL } from "./types";
 
+// ─── STORAGE ─────────────────────────────────────────────────────────────────
 function loadProfil(): ProfilInvestisseur {
   try {
     const s = localStorage.getItem("immo_profil");
@@ -13,6 +14,7 @@ function saveProfil(p: ProfilInvestisseur) {
   try { localStorage.setItem("immo_profil", JSON.stringify(p)); } catch {}
 }
 
+// ─── AI ──────────────────────────────────────────────────────────────────────
 async function analyzeAnnonce(text: string, mode: "normal" | "approfondi"): Promise<any> {
   const model = mode === "approfondi" ? "claude-opus-4-5" : "claude-sonnet-4-20250514";
   const response = await fetch("/api/analyze", {
@@ -30,6 +32,7 @@ async function analyzeAnnonce(text: string, mode: "normal" | "approfondi"): Prom
   return JSON.parse(txt.replace(/```json|```/g, "").trim());
 }
 
+// ─── CSS ─────────────────────────────────────────────────────────────────────
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -169,15 +172,160 @@ textarea::placeholder{color:var(--text3)}
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:100;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto}
 .modal{background:var(--surface);border:1px solid var(--border2);border-radius:12px;padding:24px;max-width:720px;width:100%;margin:auto}
 .modal h2{font-family:'Playfair Display',serif;font-size:1.2rem;color:var(--gold);margin-bottom:20px}
+.bien-block{background:var(--surface2);border:1px solid var(--border2);border-radius:8px;padding:12px;margin-bottom:10px}
 `;
 
-function ProfilModal({ profil, onSave, onClose }: { profil: ProfilInvestisseur; onSave: (p: ProfilInvestisseur) => void; onClose: () => void }) {
+// ─── FIELD COMPONENTS (outside render to prevent focus loss) ─────────────────
+
+interface NumFieldProps {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  suffix?: string;
+  step?: number;
+  min?: number;
+  max?: number;
+}
+function NumField({ label, value, onChange, suffix, step, min, max }: NumFieldProps) {
+  return (
+    <div className="field">
+      <label>{label}{suffix ? ` (${suffix})` : ""}</label>
+      <input
+        type="number"
+        value={value}
+        step={step || 1}
+        min={min}
+        max={max}
+        onChange={e => onChange(parseFloat(e.target.value) || 0)}
+      />
+    </div>
+  );
+}
+
+interface TxtFieldProps {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}
+function TxtField({ label, value, onChange, placeholder }: TxtFieldProps) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <input type="text" value={value} placeholder={placeholder} onChange={e => onChange(e.target.value)} />
+    </div>
+  );
+}
+
+interface SelFieldProps {
+  label: string;
+  value: string | number;
+  onChange: (v: string) => void;
+  options: { value: string | number; label: string }[];
+}
+function SelField({ label, value, onChange, options }: SelFieldProps) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <select value={value} onChange={e => onChange(e.target.value)}>
+        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+interface ToggleRowProps {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}
+function ToggleRow({ label, checked, onChange }: ToggleRowProps) {
+  return (
+    <div className="toggle-row">
+      <label>{label}</label>
+      <label className="toggle">
+        <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} />
+        <span className="tslider" />
+      </label>
+    </div>
+  );
+}
+
+// ─── BIEN ROW (stable component outside ProfilModal) ─────────────────────────
+interface BienRowProps {
+  bien: BienPatrimoine;
+  onUpdate: (k: keyof BienPatrimoine, v: any) => void;
+  onDelete: () => void;
+}
+function BienRow({ bien, onUpdate, onDelete }: BienRowProps) {
+  return (
+    <div className="bien-block">
+      <div className="grid3" style={{ marginBottom: 8 }}>
+        <SelField label="Type de bien" value={bien.type} onChange={v => onUpdate("type", v)}
+          options={[
+            { value: "appartement", label: "Appartement" },
+            { value: "maison", label: "Maison" },
+            { value: "immeuble", label: "Immeuble de rapport" },
+            { value: "parking", label: "Parking / Box" },
+            { value: "commerce", label: "Local commercial" },
+            { value: "sci_ir", label: "SCI à l'IR" },
+            { value: "sci_is", label: "SCI à l'IS" },
+            { value: "scpi", label: "SCPI" },
+            { value: "autre", label: "Autre" },
+          ]}
+        />
+        <TxtField label="Description" value={bien.description} placeholder="Ex: Studio Paris 11e" onChange={v => onUpdate("description", v)} />
+        <SelField label="Régime fiscal" value={bien.regimeFiscal} onChange={v => onUpdate("regimeFiscal", v)}
+          options={[
+            { value: "lmnp_reel", label: "LMNP Réel" },
+            { value: "lmnp_micro", label: "LMNP Micro-BIC" },
+            { value: "foncier_reel", label: "Foncier Réel" },
+            { value: "micro_foncier", label: "Micro-Foncier" },
+            { value: "sci_ir", label: "SCI IR" },
+            { value: "sci_is", label: "SCI IS" },
+            { value: "scpi", label: "SCPI" },
+            { value: "rp", label: "Résidence Principale" },
+            { value: "autre", label: "Autre" },
+          ]}
+        />
+      </div>
+      <div className="grid4">
+        <NumField label="Valeur estimée (€)" value={bien.valeurEstimee} onChange={v => onUpdate("valeurEstimee", v)} />
+        <NumField label="Capital restant dû (€)" value={bien.capitalRestantDu} onChange={v => onUpdate("capitalRestantDu", v)} />
+        <NumField label="Mensualité crédit (€)" value={bien.mensualiteCredit} onChange={v => onUpdate("mensualiteCredit", v)} />
+        <NumField label="Loyer perçu (€/mois)" value={bien.loyerMensuelPercu} onChange={v => onUpdate("loyerMensuelPercu", v)} />
+      </div>
+      <button className="btn btn-danger" style={{ marginTop: 8, padding: "5px 10px", fontSize: "0.73rem" }} onClick={onDelete}>
+        Supprimer
+      </button>
+    </div>
+  );
+}
+
+// ─── PROFIL MODAL ─────────────────────────────────────────────────────────────
+interface ProfilModalProps {
+  profil: ProfilInvestisseur;
+  onSave: (p: ProfilInvestisseur) => void;
+  onClose: () => void;
+}
+function ProfilModal({ profil, onSave, onClose }: ProfilModalProps) {
   const [p, setP] = useState<ProfilInvestisseur>({ ...profil });
-  const sv = (k: keyof ProfilInvestisseur, v: any) => setP(prev => ({ ...prev, [k]: v }));
+
+  const sv = (k: keyof ProfilInvestisseur, v: any) =>
+    setP(prev => ({ ...prev, [k]: v }));
 
   const addBien = () => setP(prev => ({
     ...prev,
-    biens: [...prev.biens, { id: Date.now().toString(), type: "appartement", description: "", valeurEstimee: 0, capitalRestantDu: 0, mensualiteCredit: 0, loyerMensuelPercu: 0, regimeFiscal: "lmnp_reel" }]
+    biens: [...prev.biens, {
+      id: Date.now().toString(),
+      type: "appartement" as const,
+      description: "",
+      valeurEstimee: 0,
+      capitalRestantDu: 0,
+      mensualiteCredit: 0,
+      loyerMensuelPercu: 0,
+      regimeFiscal: "lmnp_reel" as const,
+    }],
   }));
 
   const updBien = (id: string, k: keyof BienPatrimoine, v: any) =>
@@ -186,21 +334,9 @@ function ProfilModal({ profil, onSave, onClose }: { profil: ProfilInvestisseur; 
   const delBien = (id: string) =>
     setP(prev => ({ ...prev, biens: prev.biens.filter(b => b.id !== id) }));
 
-  const NF = ({ label, k, suffix, step }: { label: string; k: keyof ProfilInvestisseur; suffix?: string; step?: number }) => (
-    <div className="field">
-      <label>{label}{suffix ? ` (${suffix})` : ""}</label>
-      <input type="number" value={p[k] as number} step={step || 1}
-        onChange={e => sv(k, parseFloat(e.target.value) || 0)} />
-    </div>
-  );
-
-  const TF = ({ label, k, suffix, step }: { label: string; k: keyof ProfilInvestisseur; suffix?: string; step?: number }) => (
-    <div className="field">
-      <label>{label}{suffix ? ` (${suffix})` : ""}</label>
-      <input type="text" value={p[k] as string}
-        onChange={e => sv(k, e.target.value)} />
-    </div>
-  );
+  const revMensuel = (p.salaireBrutAnnuel + p.bonusAnnuel + p.autresRevenusAnnuels) / 12;
+  const autresMens = p.biens.reduce((s, b) => s + b.mensualiteCredit, 0);
+  const capacite = revMensuel * 0.35 - p.mensualiteRP - autresMens;
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -210,113 +346,68 @@ function ProfilModal({ profil, onSave, onClose }: { profil: ProfilInvestisseur; 
         <div className="section" style={{ marginBottom: 12 }}>
           <div className="stitle">Identité</div>
           <div className="grid3">
-            <TF label="Prénom" k="prenom" />
-            <div className="field">
-              <label>Situation familiale</label>
-              <select value={p.situationFamiliale} onChange={e => sv("situationFamiliale", e.target.value)}>
-                <option value="celibataire">Célibataire</option>
-                <option value="marie">Marié(e)</option>
-                <option value="pacse">Pacsé(e)</option>
-                <option value="divorce">Divorcé(e)</option>
-                <option value="veuf">Veuf / Veuve</option>
-              </select>
-            </div>
-            <NF label="Nombre d'enfants" k="nbEnfants" />
+            <TxtField label="Prénom" value={p.prenom} onChange={v => sv("prenom", v)} />
+            <SelField label="Situation familiale" value={p.situationFamiliale} onChange={v => sv("situationFamiliale", v)}
+              options={[
+                { value: "celibataire", label: "Célibataire" },
+                { value: "marie", label: "Marié(e)" },
+                { value: "pacse", label: "Pacsé(e)" },
+                { value: "divorce", label: "Divorcé(e)" },
+                { value: "veuf", label: "Veuf / Veuve" },
+              ]}
+            />
+            <NumField label="Nombre d'enfants" value={p.nbEnfants} onChange={v => sv("nbEnfants", v)} />
           </div>
           <div className="grid3" style={{ marginTop: 9 }}>
-            <NF label="Parts fiscales (QF)" k="nbPartsFC" step={0.5} />
-            <div className="field">
-              <label>TMI</label>
-              <select value={p.tmi} onChange={e => sv("tmi", parseInt(e.target.value))}>
-                {[0,11,30,41,45].map(t => <option key={t} value={t}>{t}%</option>)}
-              </select>
-            </div>
+            <NumField label="Parts fiscales (QF)" value={p.nbPartsFC} onChange={v => sv("nbPartsFC", v)} step={0.5} />
+            <SelField label="TMI" value={p.tmi} onChange={v => sv("tmi", parseInt(v))}
+              options={[0,11,30,41,45].map(t => ({ value: t, label: `${t}%` }))}
+            />
           </div>
         </div>
 
         <div className="section" style={{ marginBottom: 12 }}>
           <div className="stitle">Revenus annuels bruts</div>
           <div className="grid3">
-            <NF label="Salaire brut" k="salaireBrutAnnuel" suffix="€" />
-            <NF label="Bonus annuel" k="bonusAnnuel" suffix="€" />
-            <NF label="Autres revenus" k="autresRevenusAnnuels" suffix="€" />
+            <NumField label="Salaire brut (€)" value={p.salaireBrutAnnuel} onChange={v => sv("salaireBrutAnnuel", v)} />
+            <NumField label="Bonus annuel (€)" value={p.bonusAnnuel} onChange={v => sv("bonusAnnuel", v)} />
+            <NumField label="Autres revenus (€)" value={p.autresRevenusAnnuels} onChange={v => sv("autresRevenusAnnuels", v)} />
           </div>
-          <p style={{ fontSize: "0.7rem", color: "var(--text3)", marginTop: 8, fontFamily: "var(--mono)" }}>
-            Revenus bruts mensuels : {fmt((p.salaireBrutAnnuel + p.bonusAnnuel + p.autresRevenusAnnuels) / 12)} € · Capacité emprunt (35% HCSF) : {fmt((p.salaireBrutAnnuel + p.bonusAnnuel + p.autresRevenusAnnuels) / 12 * 0.35 - p.mensualiteRP - p.biens.reduce((s,b) => s + b.mensualiteCredit, 0))} €/mois
-          </p>
+          <div style={{ marginTop: 8, fontSize: "0.7rem", color: "var(--text3)", fontFamily: "var(--mono)" }}>
+            Revenus bruts/mois : <span style={{ color: "var(--gold)" }}>{fmt(revMensuel)} €</span> · Capacité d'emprunt résiduelle : <span style={{ color: capacite >= 0 ? "var(--green2)" : "var(--red2)" }}>{fmt(capacite)} €/mois</span>
+          </div>
         </div>
 
         <div className="section" style={{ marginBottom: 12 }}>
           <div className="stitle">Résidence Principale</div>
           <div className="grid3">
-            <NF label="Mensualité crédit RP" k="mensualiteRP" suffix="€/mois" />
-            <NF label="Valeur estimée RP" k="valeurRP" suffix="€" />
-            <NF label="Capital restant dû" k="capitalRestantDuRP" suffix="€" />
+            <NumField label="Mensualité crédit RP (€/mois)" value={p.mensualiteRP} onChange={v => sv("mensualiteRP", v)} />
+            <NumField label="Valeur estimée RP (€)" value={p.valeurRP} onChange={v => sv("valeurRP", v)} />
+            <NumField label="Capital restant dû (€)" value={p.capitalRestantDuRP} onChange={v => sv("capitalRestantDuRP", v)} />
           </div>
         </div>
 
         <div className="section" style={{ marginBottom: 12 }}>
           <div className="stitle">Patrimoine immobilier</div>
           {p.biens.length === 0 && (
-            <p style={{ fontSize: "0.77rem", color: "var(--text3)", marginBottom: 10 }}>Aucun bien. Ajoutez vos investissements existants pour un calcul d'endettement précis.</p>
+            <p style={{ fontSize: "0.77rem", color: "var(--text3)", marginBottom: 10 }}>
+              Aucun bien. Ajoutez vos investissements existants pour un calcul d'endettement précis.
+            </p>
           )}
           {p.biens.map(b => (
-            <div key={b.id} style={{ background: "var(--surface2)", border: "1px solid var(--border2)", borderRadius: 8, padding: 12, marginBottom: 10 }}>
-              <div className="grid3" style={{ marginBottom: 8 }}>
-                <div className="field">
-                  <label>Type de bien</label>
-                  <select value={b.type} onChange={e => updBien(b.id, "type", e.target.value)}>
-                    <option value="appartement">Appartement</option>
-                    <option value="maison">Maison</option>
-                    <option value="immeuble">Immeuble de rapport</option>
-                    <option value="parking">Parking / Box</option>
-                    <option value="commerce">Local commercial</option>
-                    <option value="sci_ir">SCI à l'IR</option>
-                    <option value="sci_is">SCI à l'IS</option>
-                    <option value="scpi">SCPI</option>
-                    <option value="autre">Autre</option>
-                  </select>
-                </div>
-                <div className="field">
-                  <label>Description</label>
-                  <input type="text" value={b.description} placeholder="Ex: Studio Paris 11e"
-                    onChange={e => updBien(b.id, "description", e.target.value)} />
-                </div>
-                <div className="field">
-                  <label>Régime fiscal</label>
-                  <select value={b.regimeFiscal} onChange={e => updBien(b.id, "regimeFiscal", e.target.value)}>
-                    <option value="lmnp_reel">LMNP Réel</option>
-                    <option value="lmnp_micro">LMNP Micro-BIC</option>
-                    <option value="foncier_reel">Foncier Réel</option>
-                    <option value="micro_foncier">Micro-Foncier</option>
-                    <option value="sci_ir">SCI IR</option>
-                    <option value="sci_is">SCI IS</option>
-                    <option value="scpi">SCPI</option>
-                    <option value="rp">Résidence Principale</option>
-                    <option value="autre">Autre</option>
-                  </select>
-                </div>
-              </div>
-              <div className="grid4">
-                {(["valeurEstimee","capitalRestantDu","mensualiteCredit","loyerMensuelPercu"] as (keyof BienPatrimoine)[]).map(k => (
-                  <div key={k} className="field">
-                    <label>{k === "valeurEstimee" ? "Valeur estimée (€)" : k === "capitalRestantDu" ? "Capital restant dû (€)" : k === "mensualiteCredit" ? "Mensualité crédit (€)" : "Loyer perçu (€/mois)"}</label>
-                    <input type="number" value={b[k] as number}
-                      onChange={e => updBien(b.id, k, parseFloat(e.target.value) || 0)} />
-                  </div>
-                ))}
-              </div>
-              <button className="btn btn-danger" style={{ marginTop: 8, padding: "5px 10px", fontSize: "0.73rem" }} onClick={() => delBien(b.id)}>
-                Supprimer
-              </button>
-            </div>
+            <BienRow
+              key={b.id}
+              bien={b}
+              onUpdate={(k, v) => updBien(b.id, k, v)}
+              onDelete={() => delBien(b.id)}
+            />
           ))}
           <button className="btn btn-outline" style={{ marginTop: 6 }} onClick={addBien}>+ Ajouter un bien</button>
           {p.biens.length > 0 && (
             <div style={{ marginTop: 10, fontSize: "0.72rem", color: "var(--text3)", fontFamily: "var(--mono)" }}>
-              Patrimoine brut : {fe(p.valeurRP + p.biens.reduce((s,b) => s + b.valeurEstimee, 0))} · 
-              Dettes totales : {fe(p.capitalRestantDuRP + p.biens.reduce((s,b) => s + b.capitalRestantDu, 0))} ·
-              Mensualités totales : {fe(p.mensualiteRP + p.biens.reduce((s,b) => s + b.mensualiteCredit, 0))}/mois
+              Patrimoine brut : {fe(p.valeurRP + p.biens.reduce((s, b) => s + b.valeurEstimee, 0))} ·
+              Dettes : {fe(p.capitalRestantDuRP + p.biens.reduce((s, b) => s + b.capitalRestantDu, 0))} ·
+              Mensualités totales : {fe(p.mensualiteRP + autresMens)}/mois
             </div>
           )}
         </div>
@@ -324,42 +415,34 @@ function ProfilModal({ profil, onSave, onClose }: { profil: ProfilInvestisseur; 
         <div className="section" style={{ marginBottom: 12 }}>
           <div className="stitle">Capacité & Objectifs</div>
           <div className="grid3">
-            <NF label="Apport disponible" k="apportDisponible" suffix="€" />
-            <NF label="Épargne de sécurité" k="epargneSecurite" suffix="€" />
-            <NF label="Horizon de détention" k="horizonDetention" suffix="ans" />
+            <NumField label="Apport disponible (€)" value={p.apportDisponible} onChange={v => sv("apportDisponible", v)} />
+            <NumField label="Épargne de sécurité (€)" value={p.epargneSecurite} onChange={v => sv("epargneSecurite", v)} />
+            <NumField label="Horizon de détention (ans)" value={p.horizonDetention} onChange={v => sv("horizonDetention", v)} />
           </div>
           <div className="grid3" style={{ marginTop: 9 }}>
-            <div className="field">
-              <label>Objectif principal</label>
-              <select value={p.objectif} onChange={e => sv("objectif", e.target.value)}>
-                <option value="cashflow">Cashflow immédiat</option>
-                <option value="patrimoine">Constitution de patrimoine</option>
-                <option value="defiscalisation">Défiscalisation</option>
-                <option value="retraite">Préparation retraite</option>
-                <option value="mixte">Mixte</option>
-              </select>
-            </div>
-            <div className="field">
-              <label>Tolérance au risque</label>
-              <select value={p.toleranceRisque} onChange={e => sv("toleranceRisque", e.target.value)}>
-                <option value="faible">Faible — sécurité avant tout</option>
-                <option value="modere">Modérée — équilibré</option>
-                <option value="eleve">Élevée — j'accepte le risque</option>
-              </select>
-            </div>
-            <TF label="Zone cible" k="zoneCible" />
+            <SelField label="Objectif principal" value={p.objectif} onChange={v => sv("objectif", v)}
+              options={[
+                { value: "cashflow", label: "Cashflow immédiat" },
+                { value: "patrimoine", label: "Constitution de patrimoine" },
+                { value: "defiscalisation", label: "Défiscalisation" },
+                { value: "retraite", label: "Préparation retraite" },
+                { value: "mixte", label: "Mixte" },
+              ]}
+            />
+            <SelField label="Tolérance au risque" value={p.toleranceRisque} onChange={v => sv("toleranceRisque", v)}
+              options={[
+                { value: "faible", label: "Faible — sécurité avant tout" },
+                { value: "modere", label: "Modérée — équilibré" },
+                { value: "eleve", label: "Élevée — j'accepte le risque" },
+              ]}
+            />
+            <TxtField label="Zone cible" value={p.zoneCible} onChange={v => sv("zoneCible", v)} placeholder="Paris, Province…" />
           </div>
-          <div className="toggle-row" style={{ marginTop: 10 }}>
-            <label>Gestion directe (sans agence locative)</label>
-            <label className="toggle">
-              <input type="checkbox" checked={p.gestionDirecte} onChange={e => sv("gestionDirecte", e.target.checked)} />
-              <span className="tslider" />
-            </label>
-          </div>
+          <ToggleRow label="Gestion directe (sans agence locative)" checked={p.gestionDirecte} onChange={v => sv("gestionDirecte", v)} />
         </div>
 
         <div className="btn-row">
-          <button className="btn btn-gold" onClick={() => { onSave(p); onClose(); }}>✓ Sauvegarder</button>
+          <button className="btn btn-gold" onClick={() => { onSave(p); onClose(); }}>✓ Sauvegarder le profil</button>
           <button className="btn btn-outline" onClick={onClose}>Annuler</button>
         </div>
       </div>
@@ -367,6 +450,7 @@ function ProfilModal({ profil, onSave, onClose }: { profil: ProfilInvestisseur; 
   );
 }
 
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState("saisie");
   const [inputs, setInputs] = useState<InputsBien>(DEFAULT_INPUTS);
@@ -380,7 +464,8 @@ export default function App() {
   const [results, setResults] = useState<ResultatsComplets | null>(null);
   const [sTab, setSTab] = useState("lld");
 
-  const setIn = (k: keyof InputsBien, v: any) => setInputs(prev => ({ ...prev, [k]: v }));
+  const setIn = (k: keyof InputsBien, v: any) =>
+    setInputs(prev => ({ ...prev, [k]: v }));
 
   const handleAnalyze = async () => {
     if (!urlText.trim()) return;
@@ -422,22 +507,22 @@ export default function App() {
     setTab("resultats");
   };
 
-  const F = ({ label, k, step, suffix, min, max }: { label: string; k: keyof InputsBien; step?: number; suffix?: string; min?: number; max?: number }) => (
-    <div className="field">
-      <label>{label}{suffix ? ` (${suffix})` : ""}</label>
-      <input type="number" value={inputs[k] as number} step={step || 1} min={min} max={max}
-        onChange={e => setIn(k, parseFloat(e.target.value) || 0)} />
-    </div>
-  );
-
   const r = results;
   const revenuMensuel = (profil.salaireBrutAnnuel + profil.bonusAnnuel + profil.autresRevenusAnnuels) / 12;
 
   return (
     <>
       <style>{css}</style>
-      {showProfil && <ProfilModal profil={profil} onSave={p => { setProfil(p); saveProfil(p); }} onClose={() => setShowProfil(false)} />}
+      {showProfil && (
+        <ProfilModal
+          profil={profil}
+          onSave={p => { setProfil(p); saveProfil(p); }}
+          onClose={() => setShowProfil(false)}
+        />
+      )}
+
       <div className="app">
+        {/* HEADER */}
         <div className="header">
           <div>
             <h1>Invest<span>Immo</span></h1>
@@ -449,15 +534,27 @@ export default function App() {
           </div>
         </div>
 
+        {/* TABS */}
         <div className="tabs">
-          {[["saisie","① Saisie"],["parametres","② Paramètres"],["resultats","③ Résultats"],["projections","④ Projections"],["amort","⑤ Prêt"]].map(([id,label]) => (
-            <button key={id} className={`tab ${tab === id ? "active" : ""}`}
-              onClick={() => setTab(id)} disabled={["resultats","projections","amort"].includes(id) && !r}>
+          {[
+            ["saisie", "① Saisie"],
+            ["parametres", "② Paramètres"],
+            ["resultats", "③ Résultats"],
+            ["projections", "④ Projections"],
+            ["amort", "⑤ Prêt"],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              className={`tab ${tab === id ? "active" : ""}`}
+              onClick={() => setTab(id)}
+              disabled={["resultats", "projections", "amort"].includes(id) && !r}
+            >
               {label}
             </button>
           ))}
         </div>
 
+        {/* ── SAISIE ── */}
         {tab === "saisie" && (
           <>
             <div className="section">
@@ -470,14 +567,28 @@ export default function App() {
                   Opus <span className="mode-badge mode-approfondi">Approfondi</span>
                 </button>
               </div>
-              <textarea placeholder={"Colle ici l'URL ou le texte complet de l'annonce.\n\nSonnet : extraction rapide des données (quelques centimes)\nOpus : analyse experte avec détection de risques cachés (~10 centimes)"} value={urlText} onChange={e => setUrlText(e.target.value)} style={{ minHeight: 100 }} />
+              <textarea
+                placeholder={"Colle ici l'URL ou le texte complet de l'annonce.\n\nSonnet : extraction rapide (~2 centimes)\nOpus : analyse experte avec détection de risques cachés (~10 centimes)"}
+                value={urlText}
+                onChange={e => setUrlText(e.target.value)}
+                style={{ minHeight: 100 }}
+              />
               <div className="btn-row">
-                <button className={`btn ${analyzeMode === "approfondi" ? "btn-blue" : "btn-gold"}`} onClick={handleAnalyze} disabled={loading || !urlText.trim()}>
+                <button
+                  className={`btn ${analyzeMode === "approfondi" ? "btn-blue" : "btn-gold"}`}
+                  onClick={handleAnalyze}
+                  disabled={loading || !urlText.trim()}
+                >
                   {loading ? "Analyse en cours…" : analyzeMode === "approfondi" ? "✦ Analyse Opus approfondie" : "✦ Analyser avec l'IA"}
                 </button>
                 <button className="btn btn-outline" onClick={() => { setParsed(null); setUrlText(""); }}>Réinitialiser</button>
               </div>
-              {loading && <><div className="lbar"><div className="lbar-fill" /></div><div className="ltext">{loadingMsg}</div></>}
+              {loading && (
+                <>
+                  <div className="lbar"><div className="lbar-fill" /></div>
+                  <div className="ltext">{loadingMsg}</div>
+                </>
+              )}
             </div>
 
             {parsed && (
@@ -487,7 +598,11 @@ export default function App() {
                   {parsed.typeLogement && <div className="chip">{parsed.typeLogement} · <span>{parsed.localisation}</span></div>}
                   {parsed.prix > 0 && <div className="chip">Prix <span>{fe(parsed.prix)}</span></div>}
                   {parsed.surface > 0 && <div className="chip">Surface <span>{parsed.surface} m²</span></div>}
-                  {parsed.prixM2Bien > 0 && parsed.prixM2Marche > 0 && <div className={`chip ${parsed.prixM2Bien > parsed.prixM2Marche * 1.05 ? "wchip" : "okchip"}`}>Prix/m² <span>{fmt(parsed.prixM2Bien)}€</span> vs marché <span>{fmt(parsed.prixM2Marche)}€</span></div>}
+                  {parsed.prixM2Bien > 0 && parsed.prixM2Marche > 0 && (
+                    <div className={`chip ${parsed.prixM2Bien > parsed.prixM2Marche * 1.05 ? "wchip" : "okchip"}`}>
+                      Prix/m² <span>{fmt(parsed.prixM2Bien)}€</span> vs marché <span>{fmt(parsed.prixM2Marche)}€</span>
+                    </div>
+                  )}
                   {parsed.dpe && <div className={`chip ${["F","G"].includes(parsed.dpe) ? "achip" : parsed.dpe === "E" ? "wchip" : ""}`}>DPE <span>{parsed.dpe}</span></div>}
                   {parsed.charges > 0 && <div className="chip">Charges <span>{fe(parsed.charges)}/mois</span></div>}
                   {parsed.loyerEstime > 0 && <div className="chip">Loyer <span>{fe(parsed.loyerEstime)}/mois</span></div>}
@@ -498,9 +613,15 @@ export default function App() {
                   {parsed.risqueAirbnbParis && <div className="chip achip">⚠ Risque Airbnb Paris</div>}
                   {parsed.encadrementLoyers && <div className="chip wchip">⚠ Loyers encadrés</div>}
                 </div>
-                {(parsed.alertes || []).map((a: string, i: number) => <div key={i} className="abox warning" style={{ marginTop: 6 }}><span className="aicon">⚠</span>{a}</div>)}
-                {(parsed.opportunites || []).map((o: string, i: number) => <div key={i} className="abox info" style={{ marginTop: 5 }}><span className="aicon">✓</span>{o}</div>)}
-                {parsed.analyseExpert && <div className="expert-box"><strong>Analyse Expert Opus</strong>{parsed.analyseExpert}</div>}
+                {(parsed.alertes || []).map((a: string, i: number) => (
+                  <div key={i} className="abox warning" style={{ marginTop: 6 }}><span className="aicon">⚠</span>{a}</div>
+                ))}
+                {(parsed.opportunites || []).map((o: string, i: number) => (
+                  <div key={i} className="abox info" style={{ marginTop: 5 }}><span className="aicon">✓</span>{o}</div>
+                ))}
+                {parsed.analyseExpert && (
+                  <div className="expert-box"><strong>Analyse Expert Opus</strong>{parsed.analyseExpert}</div>
+                )}
                 {(parsed.pointsCles || []).length > 0 && (
                   <div style={{ marginTop: 9, fontSize: "0.75rem", color: "var(--text2)", lineHeight: 1.6 }}>
                     <div style={{ fontSize: "0.67rem", color: "var(--text3)", fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Points clés</div>
@@ -513,107 +634,91 @@ export default function App() {
             <div className="section">
               <div className="stitle">Données du bien</div>
               <div className="grid4">
-                <F label="Prix de vente" k="prix" suffix="€" />
-                <F label="Surface" k="surface" suffix="m²" />
-                <div className="field">
-                  <label>DPE</label>
-                  <select value={inputs.dpe || ""} onChange={e => setIn("dpe", e.target.value)}>
-                    <option value="">Non renseigné</option>
-                    {["A","B","C","D","E","F","G"].map(d => <option key={d} value={d}>{d}</option>)}
-                  </select>
-                </div>
-                <div className="field">
-                  <label>Tension locative</label>
-                  <select value={inputs.tensionLocative} onChange={e => setIn("tensionLocative", e.target.value as any)}>
-                    <option value="faible">Faible (vacance 12%)</option>
-                    <option value="moyenne">Moyenne (vacance 8%)</option>
-                    <option value="forte">Forte (vacance 5%)</option>
-                    <option value="tres_forte">Très forte (vacance 3%)</option>
-                  </select>
-                </div>
+                <NumField label="Prix de vente (€)" value={inputs.prix} onChange={v => setIn("prix", v)} />
+                <NumField label="Surface (m²)" value={inputs.surface} onChange={v => setIn("surface", v)} />
+                <SelField label="DPE" value={inputs.dpe || ""} onChange={v => setIn("dpe", v)}
+                  options={[{ value: "", label: "Non renseigné" }, ...["A","B","C","D","E","F","G"].map(d => ({ value: d, label: d }))]}
+                />
+                <SelField label="Tension locative" value={inputs.tensionLocative} onChange={v => setIn("tensionLocative", v)}
+                  options={[
+                    { value: "faible", label: "Faible (vacance 12%)" },
+                    { value: "moyenne", label: "Moyenne (vacance 8%)" },
+                    { value: "forte", label: "Forte (vacance 5%)" },
+                    { value: "tres_forte", label: "Très forte (vacance 3%)" },
+                  ]}
+                />
               </div>
               <div className="grid4" style={{ marginTop: 9 }}>
-                <F label="Charges copro" k="charges" suffix="€/mois" />
-                <F label="Taxe foncière" k="taxeFonciere" suffix="€/an" />
-                <F label="Fonds travaux copro" k="fondsTravauxCopro" suffix="€/an" />
-                <F label="Frais agence" k="fraisAgencePct" suffix="%" step={0.5} />
+                <NumField label="Charges copro (€/mois)" value={inputs.charges} onChange={v => setIn("charges", v)} />
+                <NumField label="Taxe foncière (€/an)" value={inputs.taxeFonciere} onChange={v => setIn("taxeFonciere", v)} />
+                <NumField label="Fonds travaux copro (€/an)" value={inputs.fondsTravauxCopro} onChange={v => setIn("fondsTravauxCopro", v)} />
+                <NumField label="Frais agence (%)" value={inputs.fraisAgencePct} onChange={v => setIn("fraisAgencePct", v)} step={0.5} />
               </div>
               <div className="grid4" style={{ marginTop: 9 }}>
-                <F label="Travaux prévus" k="travaux" suffix="€" />
-                <F label="Ameublement" k="ameublement" suffix="€" />
-                <F label="Frais garantie bancaire" k="fraisGarantie" suffix="€" />
-                <F label="Apport" k="apport" suffix="€" />
+                <NumField label="Travaux prévus (€)" value={inputs.travaux} onChange={v => setIn("travaux", v)} />
+                <NumField label="Ameublement (€)" value={inputs.ameublement} onChange={v => setIn("ameublement", v)} />
+                <NumField label="Frais garantie bancaire (€)" value={inputs.fraisGarantie} onChange={v => setIn("fraisGarantie", v)} />
+                <NumField label="Apport (€)" value={inputs.apport} onChange={v => setIn("apport", v)} />
               </div>
-              <div className="toggle-row" style={{ marginTop: 10 }}>
-                <label>Encadrement des loyers (Paris, Lille, Lyon…)</label>
-                <label className="toggle">
-                  <input type="checkbox" checked={inputs.encadrementLoyers} onChange={e => setIn("encadrementLoyers", e.target.checked)} />
-                  <span className="tslider" />
-                </label>
-              </div>
+              <ToggleRow label="Encadrement des loyers (Paris, Lille, Lyon…)" checked={inputs.encadrementLoyers} onChange={v => setIn("encadrementLoyers", v)} />
               {inputs.encadrementLoyers && (
-                <div style={{ marginTop: 9 }}><F label="Loyer max encadré HC" k="loyerMaxEncadre" suffix="€/mois" /></div>
+                <div style={{ marginTop: 9 }}>
+                  <NumField label="Loyer max encadré HC (€/mois)" value={inputs.loyerMaxEncadre} onChange={v => setIn("loyerMaxEncadre", v)} />
+                </div>
               )}
             </div>
 
             <div className="section">
               <div className="stitle">Revenus locatifs</div>
               <div className="grid4">
-                <F label="Loyer meublé HC" k="loyerEstime" suffix="€/mois" />
-                <F label="Prix nuit Airbnb" k="prixNuitAirbnb" suffix="€" />
-                <F label="Taux occupation" k="occupancyAirbnb" suffix="%" step={1} min={0} max={100} />
-                <F label="Taux GLI" k="tauxGLI" suffix="%" step={0.1} />
+                <NumField label="Loyer meublé HC (€/mois)" value={inputs.loyerEstime} onChange={v => setIn("loyerEstime", v)} />
+                <NumField label="Prix nuit Airbnb (€)" value={inputs.prixNuitAirbnb} onChange={v => setIn("prixNuitAirbnb", v)} />
+                <NumField label="Taux occupation (%)" value={inputs.occupancyAirbnb} onChange={v => setIn("occupancyAirbnb", v)} step={1} min={0} max={100} />
+                <NumField label="Taux GLI (%)" value={inputs.tauxGLI} onChange={v => setIn("tauxGLI", v)} step={0.1} />
               </div>
-              <div className="toggle-row" style={{ marginTop: 10 }}>
-                <label>Avec conciergerie Airbnb (22% des revenus)</label>
-                <label className="toggle">
-                  <input type="checkbox" checked={inputs.avecConciergerie} onChange={e => setIn("avecConciergerie", e.target.checked)} />
-                  <span className="tslider" />
-                </label>
-              </div>
-              <div className="toggle-row">
-                <label>GLI — Garantie Loyers Impayés</label>
-                <label className="toggle">
-                  <input type="checkbox" checked={inputs.avecGLI} onChange={e => setIn("avecGLI", e.target.checked)} />
-                  <span className="tslider" />
-                </label>
-              </div>
+              <ToggleRow label="Avec conciergerie Airbnb (22% des revenus)" checked={inputs.avecConciergerie} onChange={v => setIn("avecConciergerie", v)} />
+              <ToggleRow label="GLI — Garantie Loyers Impayés" checked={inputs.avecGLI} onChange={v => setIn("avecGLI", v)} />
             </div>
 
-            <button className="btn btn-gold btn-full" onClick={handleCompute}>Calculer le modèle financier →</button>
+            <button className="btn btn-gold btn-full" onClick={handleCompute}>
+              Calculer le modèle financier →
+            </button>
           </>
         )}
 
+        {/* ── PARAMÈTRES ── */}
         {tab === "parametres" && (
           <>
             <div className="section">
               <div className="stitle">Financement</div>
               <div className="grid4">
-                <F label="Taux prêt" k="tauxPret" suffix="%" step={0.05} />
-                <F label="Durée prêt" k="dureePret" suffix="ans" />
-                <F label="Taux assurance" k="tauxAssurance" suffix="%" step={0.01} />
-                <F label="Frais comptable LMNP" k="fraisComptable" suffix="€/an" />
+                <NumField label="Taux prêt (%)" value={inputs.tauxPret} onChange={v => setIn("tauxPret", v)} step={0.05} />
+                <NumField label="Durée prêt (ans)" value={inputs.dureePret} onChange={v => setIn("dureePret", v)} />
+                <NumField label="Taux assurance (%)" value={inputs.tauxAssurance} onChange={v => setIn("tauxAssurance", v)} step={0.01} />
+                <NumField label="Frais comptable LMNP (€/an)" value={inputs.fraisComptable} onChange={v => setIn("fraisComptable", v)} />
               </div>
             </div>
             <div className="section">
               <div className="stitle">Hypothèses économiques (conservatrices)</div>
               <div className="grid4">
-                <F label="Inflation loyers" k="inflationLoyer" suffix="%/an" step={0.1} />
-                <F label="Inflation charges" k="inflationCharges" suffix="%/an" step={0.1} />
-                <F label="Revalorisation prix" k="inflationPrix" suffix="%/an" step={0.1} />
-                <F label="Horizon de calcul" k="horizon" suffix="ans" />
+                <NumField label="Inflation loyers (%/an)" value={inputs.inflationLoyer} onChange={v => setIn("inflationLoyer", v)} step={0.1} />
+                <NumField label="Inflation charges (%/an)" value={inputs.inflationCharges} onChange={v => setIn("inflationCharges", v)} step={0.1} />
+                <NumField label="Revalorisation prix (%/an)" value={inputs.inflationPrix} onChange={v => setIn("inflationPrix", v)} step={0.1} />
+                <NumField label="Horizon de calcul (ans)" value={inputs.horizon} onChange={v => setIn("horizon", v)} />
               </div>
             </div>
             <div className="abox info">
               <span className="aicon">ℹ</span>
-              <div>Profil : {profil.prenom || "Non configuré"} · TMI {profil.tmi}% · Mensualité RP {fmt(profil.mensualiteRP)}€ · Revenus bruts {fmt(revenuMensuel)}€/mois.{" "}
-                <span style={{ cursor: "pointer", color: "var(--gold)", textDecoration: "underline" }} onClick={() => setShowProfil(true)}>Modifier →</span>
+              <div>
+                Profil : <strong>{profil.prenom || "Non configuré"}</strong> · TMI {profil.tmi}% · RP {fmt(profil.mensualiteRP)}€/mois · Revenus {fmt(revenuMensuel)}€/mois.{" "}
+                <span style={{ cursor: "pointer", color: "var(--gold)", textDecoration: "underline" }} onClick={() => setShowProfil(true)}>Modifier le profil →</span>
               </div>
             </div>
             <button className="btn btn-gold btn-full" onClick={handleCompute}>Recalculer →</button>
           </>
         )}
 
+        {/* ── RÉSULTATS ── */}
         {tab === "resultats" && r && (() => {
           const edColor = r.tauxEndettement > 35 ? "var(--red2)" : r.tauxEndettement > 32 ? "var(--amber2)" : "var(--green2)";
           const bestCF = Math.max(r.cfDirectLMNP, r.cfSCIIR, r.cfSCIIS);
@@ -626,7 +731,7 @@ export default function App() {
                 </div>
                 <div className="sinfo">
                   <h3 style={{ color: r.scoreColor }}>{r.scoreLabel}</h3>
-                  <p>Score conservateur · rendement, cashflow, endettement, DPE, TRI {inputs.horizon} ans, stress test, tension locative</p>
+                  <p>Score conservateur · rendement, cashflow, endettement, DPE, TRI {inputs.horizon} ans, stress test</p>
                   <div className="ebar">
                     <div className="elabel">
                       <span>Taux d'endettement total</span>
@@ -646,10 +751,26 @@ export default function App() {
                 </div>
               </div>
 
-              {r.margeEndettement < 0 && <div className="abox danger"><span className="aicon">🚫</span><div><strong>Taux d'endettement dépassé.</strong> Augmentez l'apport de {fe(-r.margeEndettement * 12 * 5)} ou réduisez la durée.</div></div>}
-              {(inputs.dpe === "F" || inputs.dpe === "G") && <div className="abox danger"><span className="aicon">⚡</span><div><strong>DPE {inputs.dpe} — Passoire thermique.</strong> Location interdite. Travaux obligatoires ({fe(r.travauxDPE)} estimés).</div></div>}
-              {inputs.encadrementLoyers && inputs.loyerMaxEncadre > 0 && inputs.loyerEstime > inputs.loyerMaxEncadre && <div className="abox warning"><span className="aicon">⚠</span><div><strong>Loyer encadré.</strong> Plafond légal : {fe(inputs.loyerMaxEncadre)}/mois appliqué dans le modèle.</div></div>}
-              {parsed?.risqueAirbnbParis && <div className="abox warning"><span className="aicon">⚠</span><div><strong>Risque Airbnb Paris.</strong> {parsed.risqueReglementaireAirbnb || "Vérifiez le règlement PLU."}</div></div>}
+              {r.margeEndettement < 0 && (
+                <div className="abox danger"><span className="aicon">🚫</span>
+                  <div><strong>Taux d'endettement dépassé.</strong> Dépasse la règle HCSF 35%. Augmentez l'apport ({fe(-r.margeEndettement)}/mois à libérer).</div>
+                </div>
+              )}
+              {(inputs.dpe === "F" || inputs.dpe === "G") && (
+                <div className="abox danger"><span className="aicon">⚡</span>
+                  <div><strong>DPE {inputs.dpe} — Passoire thermique.</strong> Location interdite. Travaux obligatoires ({fe(r.travauxDPE)} estimés, +15% imprévus inclus).</div>
+                </div>
+              )}
+              {inputs.encadrementLoyers && inputs.loyerMaxEncadre > 0 && inputs.loyerEstime > inputs.loyerMaxEncadre && (
+                <div className="abox warning"><span className="aicon">⚠</span>
+                  <div><strong>Loyer encadré.</strong> Plafond légal {fe(inputs.loyerMaxEncadre)}/mois appliqué dans le modèle.</div>
+                </div>
+              )}
+              {parsed?.risqueAirbnbParis && (
+                <div className="abox warning"><span className="aicon">⚠</span>
+                  <div><strong>Risque Airbnb Paris.</strong> {parsed.risqueReglementaireAirbnb || "Vérifiez le règlement PLU."}</div>
+                </div>
+              )}
 
               <div className="section">
                 <div className="stitle">Acquisition & Financement</div>
@@ -661,7 +782,7 @@ export default function App() {
                   <div className="mcard"><div className="mlabel">Montant emprunté</div><div className="mval">{fe(r.montantEmprunte)}</div></div>
                   <div className="mcard"><div className="mlabel">Mensualité totale</div><div className="mval">{fe(r.mensualiteTotale)}</div><div className="msub">crédit + assurance</div></div>
                   <div className="mcard"><div className="mlabel">Coût total crédit</div><div className="mval neg">{fe(r.coutTotalCredit)}</div></div>
-                  <div className="mcard"><div className="mlabel">Cash sorti</div><div className="mval neg">{fe(r.totalInvesti)}</div><div className="msub">apport+travaux+meubles</div></div>
+                  <div className="mcard"><div className="mlabel">Cash sorti</div><div className="mval neg">{fe(r.totalInvesti)}</div><div className="msub">apport + travaux + meubles</div></div>
                   <div className="mcard"><div className="mlabel">Total acquisition</div><div className="mval">{fe(r.totalAcquisition)}</div></div>
                 </div>
               </div>
@@ -679,17 +800,33 @@ export default function App() {
               </div>
 
               <div className="section">
-                <div className="stitle">Stress Test</div>
+                <div className="stitle">Stress Test (impact cashflow mensuel LLD)</div>
                 <div className="stress-grid">
-                  <div className="stress-card"><h5>Taux +1%</h5><div className={`sv ${r.stressTest.tauxPlus1 >= 0 ? "pos" : "neg"}`}>{fe(r.stressTest.tauxPlus1)}/mois</div><div style={{ fontSize: "0.67rem", color: "var(--text3)", marginTop: 3 }}>Impact si taux +1pt</div></div>
-                  <div className="stress-card"><h5>Vacance +5%</h5><div className={`sv ${r.stressTest.vacancePlus5 >= 0 ? "pos" : "neg"}`}>{fe(r.stressTest.vacancePlus5)}/mois</div><div style={{ fontSize: "0.67rem", color: "var(--text3)", marginTop: 3 }}>Vacance supplémentaire</div></div>
-                  <div className="stress-card"><h5>Loyer −10%</h5><div className={`sv ${r.stressTest.loyerMoins10 >= 0 ? "pos" : "neg"}`}>{fe(r.stressTest.loyerMoins10)}/mois</div><div style={{ fontSize: "0.67rem", color: "var(--text3)", marginTop: 3 }}>Loyer sous-estimé</div></div>
-                  <div className="stress-card" style={{ borderColor: r.stressTest.cumulatif >= 0 ? "var(--green)" : "var(--red)" }}><h5>Scénario cumulatif ⚠</h5><div className={`sv ${r.stressTest.cumulatif >= 0 ? "pos" : "neg"}`}>{fe(r.stressTest.cumulatif)}/mois</div><div style={{ fontSize: "0.67rem", color: "var(--text3)", marginTop: 3 }}>Taux+1% + vacance+5% + loyer-10%</div></div>
+                  <div className="stress-card">
+                    <h5>Taux +1%</h5>
+                    <div className={`sv ${r.stressTest.tauxPlus1 >= 0 ? "pos" : "neg"}`}>{fe(r.stressTest.tauxPlus1)}/mois</div>
+                    <div style={{ fontSize: "0.67rem", color: "var(--text3)", marginTop: 3 }}>Si taux +1pt</div>
+                  </div>
+                  <div className="stress-card">
+                    <h5>Vacance +5%</h5>
+                    <div className={`sv ${r.stressTest.vacancePlus5 >= 0 ? "pos" : "neg"}`}>{fe(r.stressTest.vacancePlus5)}/mois</div>
+                    <div style={{ fontSize: "0.67rem", color: "var(--text3)", marginTop: 3 }}>Vacance supplémentaire</div>
+                  </div>
+                  <div className="stress-card">
+                    <h5>Loyer −10%</h5>
+                    <div className={`sv ${r.stressTest.loyerMoins10 >= 0 ? "pos" : "neg"}`}>{fe(r.stressTest.loyerMoins10)}/mois</div>
+                    <div style={{ fontSize: "0.67rem", color: "var(--text3)", marginTop: 3 }}>Loyer surestimé</div>
+                  </div>
+                  <div className="stress-card" style={{ borderColor: r.stressTest.cumulatif >= 0 ? "var(--green)" : "var(--red)" }}>
+                    <h5>Scénario cumulatif ⚠</h5>
+                    <div className={`sv ${r.stressTest.cumulatif >= 0 ? "pos" : "neg"}`}>{fe(r.stressTest.cumulatif)}/mois</div>
+                    <div style={{ fontSize: "0.67rem", color: "var(--text3)", marginTop: 3 }}>Taux+1% + vacance+5% + loyer-10%</div>
+                  </div>
                 </div>
               </div>
 
               <div className="stabs">
-                {[["lld","📋 LLD Meublé"],["airbnb","✈ Airbnb"],["structure","⚖ Structures"]].map(([id,label]) => (
+                {[["lld","📋 LLD Meublé"],["airbnb","✈ Airbnb"],["structure","⚖ Structures"]].map(([id, label]) => (
                   <button key={id} className={`stab ${sTab === id ? "active" : ""}`} onClick={() => setSTab(id)}>{label}</button>
                 ))}
               </div>
@@ -697,8 +834,14 @@ export default function App() {
               {sTab === "lld" && (
                 <div className="sp">
                   <div className="sp-hdr">
-                    <div><h3>Location Longue Durée — Meublé LMNP Réel</h3><p>Tension {inputs.tensionLocative} · GLI {inputs.avecGLI ? "incluse" : "exclue"} · Gestion {profil.gestionDirecte ? "directe" : "agence 8%"}</p></div>
-                    <div style={{ textAlign: "right" }}><div className="bigcf-l">Cashflow mensuel net</div><div className={`bigcf ${r.lld.cashflowMensuel >= 0 ? "pos" : "neg"}`}>{fe(r.lld.cashflowMensuel)}</div></div>
+                    <div>
+                      <h3>Location Longue Durée — Meublé LMNP Réel</h3>
+                      <p>Tension {inputs.tensionLocative} · GLI {inputs.avecGLI ? "incluse" : "exclue"} · Gestion {profil.gestionDirecte ? "directe" : "agence 8%"}</p>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div className="bigcf-l">Cashflow mensuel net</div>
+                      <div className={`bigcf ${r.lld.cashflowMensuel >= 0 ? "pos" : "neg"}`}>{fe(r.lld.cashflowMensuel)}</div>
+                    </div>
                   </div>
                   <div className="mgrid">
                     <div className="mcard"><div className="mlabel">Rendement brut</div><div className="mval">{fp(r.lld.rendementBrut)}</div></div>
@@ -713,19 +856,30 @@ export default function App() {
                           <td className={(v as number) < 0 ? "neg" : ""}>{(v as number) < 0 ? "− " : ""}{fe(Math.abs(v as number))}</td>
                         </tr>
                       ))}
-                      <tr className="trow"><td>= Cashflow net annuel</td><td className={r.lld.cashflowAnnuel >= 0 ? "pos" : "neg"}>{fe(r.lld.cashflowAnnuel)}</td></tr>
+                      <tr className="trow">
+                        <td>= Cashflow net annuel</td>
+                        <td className={r.lld.cashflowAnnuel >= 0 ? "pos" : "neg"}>{fe(r.lld.cashflowAnnuel)}</td>
+                      </tr>
                     </tbody>
                   </table>
                   <div className="dvd" />
-                  <div style={{ fontSize: "0.74rem", color: "var(--text2)" }}>✦ Amortissements LMNP : {fe(r.totalAmort)}/an · Économie fiscale : ~{fe(r.totalAmort * profil.tmi / 100)}/an</div>
+                  <div style={{ fontSize: "0.74rem", color: "var(--text2)" }}>
+                    ✦ Amortissements LMNP déductibles : {fe(r.totalAmort)}/an · Économie fiscale estimée : ~{fe(r.totalAmort * profil.tmi / 100)}/an
+                  </div>
                 </div>
               )}
 
               {sTab === "airbnb" && (
                 <div className="sp">
                   <div className="sp-hdr">
-                    <div><h3>Airbnb / Location Courte Durée</h3><p>{inputs.avecConciergerie ? "Conciergerie 22%" : "Autogestion 4%"} · −10% conservateur</p></div>
-                    <div style={{ textAlign: "right" }}><div className="bigcf-l">Cashflow mensuel net</div><div className={`bigcf ${r.airbnb.cashflowMensuel >= 0 ? "pos" : "neg"}`}>{fe(r.airbnb.cashflowMensuel)}</div></div>
+                    <div>
+                      <h3>Airbnb / Location Courte Durée</h3>
+                      <p>{inputs.avecConciergerie ? "Conciergerie 22%" : "Autogestion 4%"} · −10% conservateur</p>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div className="bigcf-l">Cashflow mensuel net</div>
+                      <div className={`bigcf ${r.airbnb.cashflowMensuel >= 0 ? "pos" : "neg"}`}>{fe(r.airbnb.cashflowMensuel)}</div>
+                    </div>
                   </div>
                   <div className="mgrid">
                     <div className="mcard"><div className="mlabel">CA Airbnb annuel</div><div className="mval">{fe(r.airbnb.detailCharges["CA brut Airbnb"] as number)}</div></div>
@@ -740,10 +894,17 @@ export default function App() {
                           <td className={(v as number) < 0 ? "neg" : ""}>{(v as number) < 0 ? "− " : ""}{fe(Math.abs(v as number))}</td>
                         </tr>
                       ))}
-                      <tr className="trow"><td>= Cashflow net annuel</td><td className={r.airbnb.cashflowAnnuel >= 0 ? "pos" : "neg"}>{fe(r.airbnb.cashflowAnnuel)}</td></tr>
+                      <tr className="trow">
+                        <td>= Cashflow net annuel</td>
+                        <td className={r.airbnb.cashflowAnnuel >= 0 ? "pos" : "neg"}>{fe(r.airbnb.cashflowAnnuel)}</td>
+                      </tr>
                     </tbody>
                   </table>
-                  {parsed?.risqueAirbnbParis && <div className="abox danger" style={{ marginTop: 10 }}><span className="aicon">🚫</span><div><strong>Paris — Vérification obligatoire.</strong> Ce scénario peut être illégal.</div></div>}
+                  {parsed?.risqueAirbnbParis && (
+                    <div className="abox danger" style={{ marginTop: 10 }}><span className="aicon">🚫</span>
+                      <div><strong>Paris — Vérification obligatoire.</strong> Ce scénario peut être illégal selon la zone.</div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -752,9 +913,9 @@ export default function App() {
                   <div className="stitle" style={{ marginBottom: 10 }}>Comparatif structures juridiques</div>
                   <div className="sgrid">
                     {[
-                      { title: "LMNP Direct Réel", cf: r.cfDirectLMNP, desc: "Amortissement déductible. Déficit BIC imputable. Optimal pour 1-2 biens TMI 30%." },
-                      { title: "SCI à l'IR", cf: r.cfSCIIR, desc: "Foncier réel, pas d'amortissement. PS 17,2% en sus. Pour transmission patrimoniale." },
-                      { title: "SCI à l'IS", cf: r.cfSCIIS, desc: "IS 15% / 25%. Amortissement possible. Double imposition à la revente et sur dividendes." },
+                      { title: "LMNP Direct Réel", cf: r.cfDirectLMNP, desc: "Amortissement bien + mobilier déductible. Déficit BIC imputable. Optimal pour 1-2 biens avec TMI 30%." },
+                      { title: "SCI à l'IR", cf: r.cfSCIIR, desc: "Revenus fonciers, pas d'amortissement. PS 17,2% en sus. Utile pour transmission patrimoniale." },
+                      { title: "SCI à l'IS", cf: r.cfSCIIS, desc: "IS 15% jusqu'à 42 500€. Amortissement possible. Mais double imposition dividendes (PFU 30%) + à la revente." },
                     ].map(({ title, cf, desc }) => (
                       <div key={title} className={`scard ${cf === bestCF ? "best" : ""}`}>
                         <h4>{title}{cf === bestCF && <span className="bbadge">✓ Optimal</span>}</h4>
@@ -763,21 +924,33 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <div className="abox info" style={{ marginTop: 10 }}><span className="aicon">💡</span><div>Avec TMI {profil.tmi}%, la <strong>détention directe LMNP réel</strong> est quasi systématiquement optimale sur 1-2 biens. Consultez un expert-comptable LMNP.</div></div>
-                  <div className="abox blue" style={{ marginTop: 7 }}><span className="aicon">📋</span><div><strong>Dispositif Jeanbrun 2026 :</strong> Remplace Pinel (voté jan. 2026). Amortissement 3,5-5,5% dans l'ancien rénové. Rendements nets jusqu'à 8-9% dans certaines villes moyennes.</div></div>
+                  <div className="abox info" style={{ marginTop: 10 }}>
+                    <span className="aicon">💡</span>
+                    <div>Avec TMI {profil.tmi}%, la <strong>détention directe LMNP réel</strong> est quasi systématiquement optimale sur 1-2 biens. Consultez un expert-comptable LMNP.</div>
+                  </div>
+                  <div className="abox blue" style={{ marginTop: 7 }}>
+                    <span className="aicon">📋</span>
+                    <div><strong>Dispositif Jeanbrun 2026 :</strong> Remplace Pinel (voté jan. 2026). Amortissement 3,5–5,5% dans l'ancien rénové. Rendements nets jusqu'à 8–9% dans certaines villes moyennes.</div>
+                  </div>
                 </div>
               )}
             </>
           );
         })()}
 
+        {/* ── PROJECTIONS ── */}
         {tab === "projections" && r && (
           <>
             <div className="section">
               <div className="stitle">Projections LLD — {inputs.horizon} ans</div>
               <div style={{ overflowX: "auto" }}>
                 <table className="proj-table">
-                  <thead><tr><th>Année</th><th>Loyer brut</th><th>Charges</th><th>Intérêts</th><th>Impôt</th><th>Cashflow</th><th>CF cumulé</th><th>Valeur bien</th><th>Patrimoine net</th></tr></thead>
+                  <thead>
+                    <tr>
+                      <th>Année</th><th>Loyer brut</th><th>Charges</th><th>Intérêts</th>
+                      <th>Impôt</th><th>Cashflow</th><th>CF cumulé</th><th>Valeur bien</th><th>Patrimoine net</th>
+                    </tr>
+                  </thead>
                   <tbody>
                     {r.lld.projections.map(row => (
                       <tr key={row.annee}>
@@ -800,7 +973,12 @@ export default function App() {
               <div className="stitle">Projections Airbnb — {inputs.horizon} ans</div>
               <div style={{ overflowX: "auto" }}>
                 <table className="proj-table">
-                  <thead><tr><th>Année</th><th>CA Airbnb</th><th>Charges var.</th><th>Intérêts</th><th>Impôt</th><th>Cashflow</th><th>CF cumulé</th><th>Patrimoine net</th></tr></thead>
+                  <thead>
+                    <tr>
+                      <th>Année</th><th>CA Airbnb</th><th>Charges var.</th><th>Intérêts</th>
+                      <th>Impôt</th><th>Cashflow</th><th>CF cumulé</th><th>Patrimoine net</th>
+                    </tr>
+                  </thead>
                   <tbody>
                     {r.airbnb.projections.map(row => (
                       <tr key={row.annee}>
@@ -821,6 +999,7 @@ export default function App() {
           </>
         )}
 
+        {/* ── AMORT ── */}
         {tab === "amort" && r && (
           <div className="section">
             <div className="stitle">Tableau d'amortissement</div>
@@ -831,7 +1010,9 @@ export default function App() {
             </div>
             <div style={{ overflowX: "auto" }}>
               <table className="atable">
-                <thead><tr><th>Année</th><th>Intérêts</th><th>Capital remb.</th><th>Capital restant</th></tr></thead>
+                <thead>
+                  <tr><th>Année</th><th>Intérêts</th><th>Capital remb.</th><th>Capital restant</th></tr>
+                </thead>
                 <tbody>
                   {r.amortTable.map((row, i) => {
                     const prev = r.amortTable[i - 1];
@@ -851,7 +1032,9 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-            <p style={{ fontSize: "0.68rem", color: "var(--text3)", marginTop: 8, fontFamily: "var(--mono)" }}>5 premières + 5 dernières années · {inputs.tauxPret}% · {inputs.dureePret} ans</p>
+            <p style={{ fontSize: "0.68rem", color: "var(--text3)", marginTop: 8, fontFamily: "var(--mono)" }}>
+              5 premières + 5 dernières années · {inputs.tauxPret}% · {inputs.dureePret} ans
+            </p>
           </div>
         )}
       </div>
