@@ -2,6 +2,7 @@ import { useState } from "react";
 import { computeModel, fmt, fe, fp } from "./model";
 import type { InputsBien, ProfilInvestisseur, BienPatrimoine, ResultatsComplets } from "./types";
 import { DEFAULT_INPUTS, DEFAULT_PROFIL } from "./types";
+import type { EstimationMode } from "./types";
 import { Chat } from "./Chat";
 
 // ─── STORAGE ─────────────────────────────────────────────────────────────────
@@ -16,7 +17,7 @@ function saveProfil(p: ProfilInvestisseur) {
 }
 
 // ─── AI ──────────────────────────────────────────────────────────────────────
-async function analyzeAnnonce(text: string, mode: "normal" | "approfondi"): Promise<any> {
+async function analyzeAnnonce(text: string, mode: "normal" | "approfondi", estimMode: EstimationMode = "conservateur"): Promise<any> {
   const model = mode === "approfondi" ? "claude-opus-4-5" : "claude-sonnet-4-5";
   const response = await fetch("/api/analyze", {
     method: "POST",
@@ -25,7 +26,11 @@ async function analyzeAnnonce(text: string, mode: "normal" | "approfondi"): Prom
       model,
 max_tokens: mode === "approfondi" ? 3000 : 2000,
       system: "Tu es un expert en investissement immobilier français. Réponds UNIQUEMENT en JSON valide, sans backticks ni texte autour.",
-messages: [{ role: "user", content: `Analyse cette annonce immobilière. Si une donnée manque, estime-la de manière CONSERVATRICE.\n\n${text.slice(0, 3000)}\n\n
+messages: [{ role: "user", content: `Analyse cette annonce immobilière. Mode d'estimation : ${estimMode.toUpperCase()}.
+- CONSERVATEUR : loyer percentile 20, occupation Airbnb -15%, travaux +20%, vacance 12%, revalorisation 1%/an
+- REALISTE : loyer médian marché, occupation Airbnb marché, travaux standard, vacance 8%, revalorisation 2%/an  
+- AGRESSIF : loyer percentile 80, occupation Airbnb +10%, travaux minimum, vacance 5%, revalorisation 3.5%/an
+Utilise le mode ${estimMode} pour TOUTES tes estimations.\n\n${text.slice(0, 3000)}\n\n
 Retourne EXACTEMENT ce JSON:\n{"prix":number,"surface":number,"dpe":"A"|"B"|"C"|"D"|"E"|"F"|"G"|null,"charges":number,"taxeFonciere":number,"fondsTravauxCopro":number,"loyerEstime":number,"loyerMaxEncadre":number,"encadrementLoyers":boolean,"prixNuitAirbnbEstime":number,"occupancyAirbnbEstime":number,"fraisAgencePct":number,"travauxEstimes":number,"ameublementEstime":number,"localisation":"string","ville":"string","typeLogement":"string","tensionLocative":"faible"|"moyenne"|"forte"|"tres_forte","risqueAirbnbParis":boolean,"risqueReglementaireAirbnb":"string","risquesDPE":"string","prixM2Marche":number,"prixM2Bien":number,"negociationEstimee":number,"pointsCles":["string"],"alertes":["string"],"opportunites":["string"],"analyseExpert":"string"}` }],
     }),
   });
@@ -464,8 +469,9 @@ export default function App() {
   const [loadingMsg, setLoadingMsg] = useState("");
   const [parsed, setParsed] = useState<any>(null);
   const [results, setResults] = useState<ResultatsComplets | null>(null);
-  const [sTab, setSTab] = useState("lld");
-
+const [sTab, setSTab] = useState("lld");
+const [estimMode, setEstimMode] = useState<EstimationMode>("conservateur");
+  
   const setIn = (k: keyof InputsBien, v: any) =>
     setInputs(prev => ({ ...prev, [k]: v }));
 
@@ -474,7 +480,7 @@ export default function App() {
     setLoading(true);
     setLoadingMsg(analyzeMode === "approfondi" ? "Analyse approfondie Opus en cours…" : "Analyse Sonnet en cours…");
     try {
-      const data = await analyzeAnnonce(urlText, analyzeMode);
+const data = await analyzeAnnonce(urlText, analyzeMode, estimMode);
       setParsed(data);
       const merged: InputsBien = {
         ...inputs,
@@ -575,10 +581,20 @@ export default function App() {
                 onChange={e => setUrlText(e.target.value)}
                 style={{ minHeight: 100 }}
               />
-              <div className="btn-row">
-                <button
-                  className={`btn ${analyzeMode === "approfondi" ? "btn-blue" : "btn-gold"}`}
-                  onClick={handleAnalyze}
+<div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+  {(["conservateur","realiste","agressif"] as EstimationMode[]).map(m => (
+    <button key={m} onClick={() => setEstimMode(m)}
+      style={{
+        padding: "5px 12px", borderRadius: 6, border: "1px solid",
+        fontSize: "0.75rem", cursor: "pointer", fontFamily: "var(--mono)",
+        background: estimMode === m ? (m === "conservateur" ? "rgba(61,122,82,0.2)" : m === "realiste" ? "rgba(212,168,75,0.2)" : "rgba(196,79,79,0.2)") : "transparent",
+        borderColor: estimMode === m ? (m === "conservateur" ? "var(--green2)" : m === "realiste" ? "var(--gold)" : "var(--red2)") : "var(--border2)",
+        color: estimMode === m ? (m === "conservateur" ? "var(--green2)" : m === "realiste" ? "var(--gold)" : "var(--red2)") : "var(--text3)",
+      }}>
+      {m === "conservateur" ? "🛡 Conservateur" : m === "realiste" ? "⚖ Réaliste" : "🚀 Agressif"}
+    </button>
+  ))}
+</div>
                   disabled={loading || !urlText.trim()}
                 >
                   {loading ? "Analyse en cours…" : analyzeMode === "approfondi" ? "✦ Analyse Opus approfondie" : "✦ Analyser avec l'IA"}
