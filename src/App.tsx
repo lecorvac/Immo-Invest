@@ -592,9 +592,13 @@ const data = await analyzeAnnonce(urlText, analyzeMode, estimMode);
         color: estimMode === m ? (m === "conservateur" ? "var(--green2)" : m === "realiste" ? "var(--gold)" : "var(--red2)") : "var(--text3)",
       }}>
       {m === "conservateur" ? "🛡 Conservateur" : m === "realiste" ? "⚖ Réaliste" : "🚀 Agressif"}
-    </button>
+</button>
   ))}
 </div>
+              <div className="btn-row">
+                <button
+                  className={`btn ${analyzeMode === "approfondi" ? "btn-blue" : "btn-gold"}`}
+                  onClick={handleAnalyze}
                   disabled={loading || !urlText.trim()}
                 >
                   {loading ? "Analyse en cours…" : analyzeMode === "approfondi" ? "✦ Analyse Opus approfondie" : "✦ Analyser avec l'IA"}
@@ -1056,8 +1060,8 @@ const data = await analyzeAnnonce(urlText, analyzeMode, estimMode);
             </p>
           </div>
         )}
-      </div>
-<Chat results={r ?? null} inputs={inputs} profil={profil} />
+</div>
+      <Chat results={r || null} inputs={inputs} profil={profil} />
     </>
   );
 }
