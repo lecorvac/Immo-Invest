@@ -350,8 +350,8 @@ export default function App() {
       setParsed(data);
       const merged = {
         ...inputs,
-        prix: data.prix || inputs.prix,
-        surface: data.surface || inputs.surface,
+        prix: data.prix > 0 ? data.prix : inputs.prix,
+        surface: data.surface > 0 ? data.surface : inputs.surface,
         dpe: data.dpe || inputs.dpe,
         charges: data.charges || inputs.charges,
         taxeFonciere: data.taxeFonciere || inputs.taxeFonciere,
