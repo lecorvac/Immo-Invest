@@ -185,8 +185,8 @@ function computeModel(p: Inputs) {
   };
 }
 
-async function analyzeWithAI(text: string) {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+async function analyzeWithAI(text: 
+const response = await fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
