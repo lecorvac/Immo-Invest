@@ -130,7 +130,7 @@ export const DEFAULT_INPUTS: InputsBien = {
   loyerMaxEncadre: 0,
   // Revenus — tout à 0, estimé par l'IA
   loyerEstime: 0,
-  occupancyAirbnb: 0,
+  occupancyAirbnb: 50,
   prixNuitAirbnb: 0,
   avecConciergerie: true,
   // Protection — activé par défaut, taux marché
