@@ -2,6 +2,7 @@ import { useState } from "react";
 import { computeModel, fmt, fe, fp } from "./model";
 import type { InputsBien, ProfilInvestisseur, BienPatrimoine, ResultatsComplets } from "./types";
 import { DEFAULT_INPUTS, DEFAULT_PROFIL } from "./types";
+import { Chat } from "./Chat";
 
 // ─── STORAGE ─────────────────────────────────────────────────────────────────
 function loadProfil(): ProfilInvestisseur {
@@ -16,7 +17,7 @@ function saveProfil(p: ProfilInvestisseur) {
 
 // ─── AI ──────────────────────────────────────────────────────────────────────
 async function analyzeAnnonce(text: string, mode: "normal" | "approfondi"): Promise<any> {
-  const model = mode === "approfondi" ? "claude-opus-4-5" : "claude-sonnet-4-5";
+  const model = mode === "approfondi" ? "claude-opus-4-5" : "claude-sonnet-4-20250514";
   const response = await fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -934,6 +935,8 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              <Chat results={r} inputs={inputs} profil={profil} />
             </>
           );
         })()}
