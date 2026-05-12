@@ -197,7 +197,7 @@ const response = await fetch("/api/analyze", {
     }),
   });
   const data = await response.json();
-  return JSON.parse(data.content[0].text.replace(/```json|```/g, "").trim());
+  return JSON.parse(data?.content?.[0]?.text || JSON.stringify(data).replace(/```json|```/g, "").trim());
 }
 
 const DEFAULTS: Inputs = {
