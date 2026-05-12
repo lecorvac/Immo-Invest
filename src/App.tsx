@@ -23,9 +23,10 @@ async function analyzeAnnonce(text: string, mode: "normal" | "approfondi"): Prom
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model,
-      max_tokens: mode === "approfondi" ? 2000 : 1200,
+max_tokens: mode === "approfondi" ? 3000 : 2000,
       system: "Tu es un expert en investissement immobilier français. Réponds UNIQUEMENT en JSON valide, sans backticks ni texte autour.",
-      messages: [{ role: "user", content: `Analyse cette annonce immobilière. Si une donnée manque, estime-la de manière CONSERVATRICE.\n\n${text}\n\nRetourne EXACTEMENT ce JSON:\n{"prix":number,"surface":number,"dpe":"A"|"B"|"C"|"D"|"E"|"F"|"G"|null,"charges":number,"taxeFonciere":number,"fondsTravauxCopro":number,"loyerEstime":number,"loyerMaxEncadre":number,"encadrementLoyers":boolean,"prixNuitAirbnbEstime":number,"occupancyAirbnbEstime":number,"fraisAgencePct":number,"travauxEstimes":number,"ameublementEstime":number,"localisation":"string","ville":"string","typeLogement":"string","tensionLocative":"faible"|"moyenne"|"forte"|"tres_forte","risqueAirbnbParis":boolean,"risqueReglementaireAirbnb":"string","risquesDPE":"string","prixM2Marche":number,"prixM2Bien":number,"negociationEstimee":number,"pointsCles":["string"],"alertes":["string"],"opportunites":["string"],"analyseExpert":"string"}` }],
+messages: [{ role: "user", content: `Analyse cette annonce immobilière. Si une donnée manque, estime-la de manière CONSERVATRICE.\n\n${text.slice(0, 3000)}\n\n
+Retourne EXACTEMENT ce JSON:\n{"prix":number,"surface":number,"dpe":"A"|"B"|"C"|"D"|"E"|"F"|"G"|null,"charges":number,"taxeFonciere":number,"fondsTravauxCopro":number,"loyerEstime":number,"loyerMaxEncadre":number,"encadrementLoyers":boolean,"prixNuitAirbnbEstime":number,"occupancyAirbnbEstime":number,"fraisAgencePct":number,"travauxEstimes":number,"ameublementEstime":number,"localisation":"string","ville":"string","typeLogement":"string","tensionLocative":"faible"|"moyenne"|"forte"|"tres_forte","risqueAirbnbParis":boolean,"risqueReglementaireAirbnb":"string","risquesDPE":"string","prixM2Marche":number,"prixM2Bien":number,"negociationEstimee":number,"pointsCles":["string"],"alertes":["string"],"opportunites":["string"],"analyseExpert":"string"}` }],
     }),
   });
   const data = await response.json();
