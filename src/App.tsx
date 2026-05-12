@@ -1,383 +1,428 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { computeModel, fmt, fe, fp } from "./model";
+import type { InputsBien, ProfilInvestisseur, BienPatrimoine, ResultatsComplets } from "./types";
+import { DEFAULT_INPUTS, DEFAULT_PROFIL } from "./types";
 
-// ─────────────────────────────────────────────
-// FINANCIAL ENGINE
-// ─────────────────────────────────────────────
-function pmt(rate: number, nper: number, pv: number): number {
-  if (rate === 0) return pv / nper;
-  return (pv * rate * Math.pow(1 + rate, nper)) / (Math.pow(1 + rate, nper) - 1);
+function loadProfil(): ProfilInvestisseur {
+  try {
+    const s = localStorage.getItem("immo_profil");
+    return s ? { ...DEFAULT_PROFIL, ...JSON.parse(s) } : DEFAULT_PROFIL;
+  } catch { return DEFAULT_PROFIL; }
 }
-function irrCalc(cashflows: number[], guess = 0.08): number {
-  let rate = guess;
-  for (let i = 0; i < 200; i++) {
-    const f = cashflows.reduce((s, cf, t) => s + cf / Math.pow(1 + rate, t), 0);
-    const df = cashflows.reduce((s, cf, t) => s - (t * cf) / Math.pow(1 + rate, t + 1), 0);
-    if (Math.abs(df) < 1e-12) break;
-    const nr = rate - f / df;
-    if (Math.abs(nr - rate) < 1e-9) { rate = nr; break; }
-    rate = Math.max(-0.99, Math.min(nr, 5));
-  }
-  return rate;
-}
-function fmt(n: number, d = 0): string {
-  if (n == null || isNaN(n) || !isFinite(n)) return "—";
-  return new Intl.NumberFormat("fr-FR", { minimumFractionDigits: d, maximumFractionDigits: d }).format(n);
-}
-const fe = (n: number, d = 0) => fmt(n, d) + " €";
-const fp = (n: number, d = 1) => fmt(n, d) + " %";
-
-interface Inputs {
-  prix: number; apport: number; tauxPret: number; dureePret: number; tauxAssurance: number;
-  fraisAgencePct: number; surface: number; dpe: string; charges: number; taxeFonciere: number;
-  travaux: number; ameublement: number; loyerEstime: number;
-  occupancyAirbnb: number; prixNuitAirbnb: number; avecConciergerie: boolean;
-  inflationLoyer: number; inflationCharges: number; inflationPrix: number;
-  tmi: number; horizon: number; revenuMensuelBrut: number; mensualiteRP: number;
+function saveProfil(p: ProfilInvestisseur) {
+  try { localStorage.setItem("immo_profil", JSON.stringify(p)); } catch {}
 }
 
-function computeModel(p: Inputs) {
-  const { prix, apport, tauxPret, dureePret, tauxAssurance, fraisAgencePct, dpe,
-    charges, taxeFonciere, travaux, ameublement, loyerEstime,
-    occupancyAirbnb, prixNuitAirbnb, avecConciergerie,
-    inflationLoyer, inflationCharges, inflationPrix, tmi, horizon,
-    revenuMensuelBrut, mensualiteRP } = p;
-
-  const fraisNotaire = prix * 0.082;
-  const fraisAgence = (fraisAgencePct / 100) * prix;
-  const dpeMap: Record<string, number> = { A: 0, B: 0, C: 0, D: 8000, E: 20000, F: 40000, G: 70000 };
-  const travauxDPE = dpe ? (dpeMap[dpe] || 0) : 0;
-  const travauxTot = travaux + travauxDPE * 1.15;
-  const totalAcquisition = prix + fraisNotaire + fraisAgence + travauxTot + ameublement;
-  const montantEmprunte = prix - apport + fraisNotaire + fraisAgence;
-  const tauxM = tauxPret / 100 / 12;
-  const tauxAssM = tauxAssurance / 100 / 12;
-  const nbMois = dureePret * 12;
-  const mensualiteCredit = pmt(tauxM, nbMois, montantEmprunte);
-  const mensualiteAssurance = montantEmprunte * tauxAssM;
-  const mensualiteTotale = mensualiteCredit + mensualiteAssurance;
-  const coutTotalCredit = mensualiteTotale * nbMois - montantEmprunte;
-  const totalInvesti = apport + travauxTot + ameublement;
-  const tauxEndettement = ((mensualiteRP + mensualiteTotale) / revenuMensuelBrut) * 100;
-  const capaciteResiduelle = revenuMensuelBrut * 0.35 - mensualiteRP;
-  const margeEndettement = capaciteResiduelle - mensualiteTotale;
-  const chargesAn = charges * 12;
-  const assurancePNO = Math.max(prix * 0.001, 150);
-  const provisionTravaux = prix * 0.005;
-  const amortBien = (prix * 0.85) / 30;
-  const amortTravaux = travauxTot / 10;
-  const amortMeuble = ameublement / 7;
-  const totalAmort = amortBien + amortTravaux + amortMeuble;
-
-  // LLD
-  const vacanceLLD = loyerEstime * 12 * 0.08;
-  const revenuBrutLLD = loyerEstime * 12 - vacanceLLD;
-  const gestionLocative = revenuBrutLLD * 0.08;
-  const interetsAn1 = montantEmprunte * (tauxPret / 100);
-  const chargesDedLMNP = chargesAn + taxeFonciere + assurancePNO + gestionLocative + interetsAn1 + totalAmort + provisionTravaux;
-  const impotLMNP = Math.max(0, revenuBrutLLD - chargesDedLMNP) * (tmi / 100);
-  const cashflowLLDAn = revenuBrutLLD - chargesAn - taxeFonciere - assurancePNO - gestionLocative - mensualiteTotale * 12 - impotLMNP - provisionTravaux;
-  const cashflowLLDMois = cashflowLLDAn / 12;
-  const impotMicroBIC = revenuBrutLLD * 0.5 * (tmi / 100 + 0.172);
-  const cashflowMicroBIC = (revenuBrutLLD - chargesAn - taxeFonciere - assurancePNO - gestionLocative - mensualiteTotale * 12 - impotMicroBIC - provisionTravaux) / 12;
-  const rendBrutLLD = (loyerEstime * 12 / prix) * 100;
-  const rendNetLLD = ((revenuBrutLLD - chargesAn - taxeFonciere - assurancePNO - gestionLocative - impotLMNP) / totalAcquisition) * 100;
-
-  const cfsLLD = [-totalInvesti];
-  for (let y = 1; y <= horizon; y++) {
-    const loySim = loyerEstime * 12 * Math.pow(1 + inflationLoyer / 100, y - 1) * 0.92;
-    const chgSim = chargesAn * Math.pow(1 + inflationCharges / 100, y - 1);
-    const tfSim = taxeFonciere * Math.pow(1 + 0.02, y - 1);
-    const intY = montantEmprunte * (tauxPret / 100) * Math.max(0, 1 - y / dureePret);
-    const amortY = y <= dureePret ? totalAmort : 0;
-    const imposY = Math.max(0, loySim - chgSim - tfSim - assurancePNO - gestionLocative - intY - amortY) * (tmi / 100);
-    const cf = loySim - chgSim - tfSim - assurancePNO - gestionLocative - mensualiteTotale * 12 - imposY - provisionTravaux;
-    if (y === horizon) {
-      const pxRevente = prix * Math.pow(1 + inflationPrix / 100, y);
-      const crd = montantEmprunte * (1 - Math.min(1, (y * 12) / nbMois)) * 0.85;
-      cfsLLD.push(cf + pxRevente - crd);
-    } else cfsLLD.push(cf);
-  }
-  const triLLD = irrCalc(cfsLLD) * 100;
-
-  // Airbnb
-  const nuitesAn = 365 * (occupancyAirbnb / 100) * 0.9;
-  const revBrutAirbnb = nuitesAn * prixNuitAirbnb;
-  const fraisPlateformeAirbnb = revBrutAirbnb * 0.03;
-  const fraisConciergerie = avecConciergerie ? revBrutAirbnb * 0.22 : 0;
-  const fraisAutoGestion = avecConciergerie ? 0 : revBrutAirbnb * 0.04;
-  const linge = nuitesAn * 6;
-  const consommables = nuitesAn * 4;
-  const electriciteSupp = nuitesAn * 3;
-  const chargesVarAirbnb = fraisPlateformeAirbnb + fraisConciergerie + fraisAutoGestion + linge + consommables + electriciteSupp;
-  const revNetAvImpotAirbnb = revBrutAirbnb - chargesVarAirbnb - chargesAn - taxeFonciere - assurancePNO - provisionTravaux;
-  const dedAirbnb = chargesVarAirbnb + chargesAn + taxeFonciere + assurancePNO + interetsAn1 + totalAmort + provisionTravaux;
-  const imposAirbnbReel = Math.max(0, revBrutAirbnb - dedAirbnb) * (tmi / 100);
-  const cfAirbnbAn = revNetAvImpotAirbnb - mensualiteTotale * 12 - imposAirbnbReel;
-  const cfAirbnbMois = cfAirbnbAn / 12;
-  const rendBrutAirbnb = (revBrutAirbnb / prix) * 100;
-  const rendNetAirbnb = ((revNetAvImpotAirbnb - imposAirbnbReel) / totalAcquisition) * 100;
-
-  const cfsAirbnb = [-totalInvesti];
-  for (let y = 1; y <= horizon; y++) {
-    const revSim = revBrutAirbnb * Math.pow(1 + inflationLoyer / 100, y - 1) * 0.9;
-    const chgVar = chargesVarAirbnb * Math.pow(1 + inflationCharges / 100, y - 1);
-    const chgFix = chargesAn * Math.pow(1 + inflationCharges / 100, y - 1);
-    const tfSim = taxeFonciere * Math.pow(1 + 0.02, y - 1);
-    const intY = montantEmprunte * (tauxPret / 100) * Math.max(0, 1 - y / dureePret);
-    const amortY = y <= dureePret ? totalAmort : 0;
-    const impos = Math.max(0, revSim - chgVar - chgFix - tfSim - assurancePNO - intY - amortY) * (tmi / 100);
-    const cf = revSim - chgVar - chgFix - tfSim - assurancePNO - mensualiteTotale * 12 - impos - provisionTravaux;
-    if (y === horizon) {
-      const pxRevente = prix * Math.pow(1 + inflationPrix / 100, y);
-      const crd = montantEmprunte * (1 - Math.min(1, (y * 12) / nbMois)) * 0.85;
-      cfsAirbnb.push(cf + pxRevente - crd);
-    } else cfsAirbnb.push(cf);
-  }
-  const triAirbnb = irrCalc(cfsAirbnb) * 100;
-
-  // Structures
-  const chargesDedSCIIR = chargesAn + taxeFonciere + assurancePNO + gestionLocative + interetsAn1;
-  const impotSCIIR = Math.max(0, revenuBrutLLD - chargesDedSCIIR) * (tmi / 100 + 0.172);
-  const cfSCIIRAn = revenuBrutLLD - chargesAn - taxeFonciere - assurancePNO - gestionLocative - mensualiteTotale * 12 - impotSCIIR;
-  const chargesDedSCIIS = chargesAn + taxeFonciere + assurancePNO + gestionLocative + interetsAn1 + totalAmort;
-  const benefSCIIS = Math.max(0, revenuBrutLLD - chargesDedSCIIS);
-  const isSCIIS = benefSCIIS <= 42500 ? benefSCIIS * 0.15 : 42500 * 0.15 + (benefSCIIS - 42500) * 0.25;
-  const cfSCIISAn = revenuBrutLLD - chargesAn - taxeFonciere - assurancePNO - gestionLocative - mensualiteTotale * 12 - isSCIIS;
-
-  // Amort table
-  const amortTable: { an: number; int: number; cap: number; crd: number }[] = [];
-  let crd = montantEmprunte;
-  let intAn = 0, capAn = 0;
-  for (let m = 1; m <= nbMois; m++) {
-    const int = crd * tauxM;
-    const cap = mensualiteCredit - int;
-    crd = Math.max(0, crd - cap);
-    intAn += int; capAn += cap;
-    if (m % 12 === 0) {
-      const an = m / 12;
-      amortTable.push({ an, int: intAn, cap: capAn, crd });
-      intAn = 0; capAn = 0;
-    }
-  }
-
-  // Score
-  let score = 50;
-  if (rendBrutLLD >= 8) score += 15; else if (rendBrutLLD >= 6) score += 10; else if (rendBrutLLD >= 5) score += 5; else if (rendBrutLLD < 4) score -= 15;
-  if (cashflowLLDMois >= 200) score += 10; else if (cashflowLLDMois >= 0) score += 5; else if (cashflowLLDMois < -300) score -= 15; else if (cashflowLLDMois < 0) score -= 5;
-  if (tauxEndettement > 35) score -= 20; else if (tauxEndettement > 30) score -= 8;
-  if (dpe === "F" || dpe === "G") score -= 15; else if (dpe === "E") score -= 7; else if (dpe === "A" || dpe === "B") score += 5;
-  if (triLLD >= 8) score += 10; else if (triLLD >= 5) score += 5; else if (triLLD < 2) score -= 10;
-  if (margeEndettement < 0) score -= 25;
-  score = Math.max(0, Math.min(100, score));
-  const scoreLabel = score >= 75 ? "Excellente opportunité" : score >= 60 ? "Bonne opportunité" : score >= 45 ? "Opportunité correcte" : score >= 30 ? "Opportunité risquée" : "À éviter";
-  const scoreColor = score >= 75 ? "#5FAF7A" : score >= 60 ? "#8BC870" : score >= 45 ? "#D4A84B" : score >= 30 ? "#C88A3A" : "#C44F4F";
-
-  return {
-    fraisNotaire, fraisAgence, travauxTot, travauxDPE, totalAcquisition, totalInvesti,
-    montantEmprunte, mensualiteCredit, mensualiteAssurance, mensualiteTotale, coutTotalCredit,
-    tauxEndettement, margeEndettement, capaciteResiduelle, chargesAn, assurancePNO, provisionTravaux, totalAmort,
-    revenuBrutLLD, vacanceLLD, gestionLocative, impotLMNP, impotMicroBIC,
-    cashflowLLDMois, cashflowLLDAn, cashflowMicroBIC, rendBrutLLD, rendNetLLD, triLLD,
-    nuitesAn, revBrutAirbnb, fraisPlateformeAirbnb, fraisConciergerie, fraisAutoGestion,
-    chargesVarAirbnb, imposAirbnbReel, cfAirbnbMois, cfAirbnbAn, rendBrutAirbnb, rendNetAirbnb, triAirbnb,
-    impotSCIIR, cfSCIIRAn, isSCIIS, cfSCIISAn,
-    amortTable, score, scoreLabel, scoreColor,
-  };
-}
-
-async function analyzeWithAI(text: string) {
-const response = await fetch("/api/analyze", {
+async function analyzeAnnonce(text: string, mode: "normal" | "approfondi"): Promise<any> {
+  const model = mode === "approfondi" ? "claude-opus-4-5" : "claude-sonnet-4-20250514";
+  const response = await fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1500,
+      model,
+      max_tokens: mode === "approfondi" ? 2000 : 1200,
       system: "Tu es un expert en investissement immobilier français. Réponds UNIQUEMENT en JSON valide, sans backticks ni texte autour.",
-      messages: [{ role: "user", content: `Analyse cette annonce immobilière et extrais toutes les données. Si une donnée manque, estime-la de manière CONSERVATRICE.\n\n${text}\n\nRetourne ce JSON:\n{"prix":number,"surface":number,"dpe":"A"|"B"|"C"|"D"|"E"|"F"|"G"|null,"charges":number,"taxeFonciere":number,"loyerEstime":number,"prixNuitAirbnbEstime":number,"occupancyAirbnbEstime":number,"fraisAgencePct":number,"travauxEstimes":number,"ameublementEstime":number,"localisation":string,"typeLogement":string,"risqueAirbnbParis":boolean,"alertes":string[],"pointsCles":string[]}` }],
+      messages: [{ role: "user", content: `Analyse cette annonce immobilière. Si une donnée manque, estime-la de manière CONSERVATRICE.\n\n${text}\n\nRetourne EXACTEMENT ce JSON:\n{"prix":number,"surface":number,"dpe":"A"|"B"|"C"|"D"|"E"|"F"|"G"|null,"charges":number,"taxeFonciere":number,"fondsTravauxCopro":number,"loyerEstime":number,"loyerMaxEncadre":number,"encadrementLoyers":boolean,"prixNuitAirbnbEstime":number,"occupancyAirbnbEstime":number,"fraisAgencePct":number,"travauxEstimes":number,"ameublementEstime":number,"localisation":"string","ville":"string","typeLogement":"string","tensionLocative":"faible"|"moyenne"|"forte"|"tres_forte","risqueAirbnbParis":boolean,"risqueReglementaireAirbnb":"string","risquesDPE":"string","prixM2Marche":number,"prixM2Bien":number,"negociationEstimee":number,"pointsCles":["string"],"alertes":["string"],"opportunites":["string"],"analyseExpert":"string"}` }],
     }),
   });
   const data = await response.json();
-  return JSON.parse(data?.content?.[0]?.text || JSON.stringify(data).replace(/```json|```/g, "").trim());
+  const txt = data?.content?.[0]?.text || JSON.stringify(data);
+  return JSON.parse(txt.replace(/```json|```/g, "").trim());
 }
-
-const DEFAULTS: Inputs = {
-  prix: 180000, apport: 36000, tauxPret: 3.5, dureePret: 20, tauxAssurance: 0.25,
-  fraisAgencePct: 5, surface: 35, dpe: "D", charges: 100, taxeFonciere: 800,
-  travaux: 10000, ameublement: 8000, loyerEstime: 750,
-  occupancyAirbnb: 50, prixNuitAirbnb: 85, avecConciergerie: true,
-  inflationLoyer: 2, inflationCharges: 2.5, inflationPrix: 1.5,
-  tmi: 30, horizon: 10, revenuMensuelBrut: 6375, mensualiteRP: 1271,
-};
 
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#0F0E0C;--surface:#191714;--surface2:#232018;--border:#2E2B25;--border2:#3D3830;
-  --gold:#D4A84B;--gold2:#F0C866;--gold3:#8A6A20;
-  --green2:#5FAF7A;--red2:#C44F4F;--amber2:#C88A3A;
-  --text:#F0EAD8;--text2:#A89880;--text3:#6A5E50;
-  --mono:'IBM Plex Mono',monospace;
-}
+:root{--bg:#0F0E0C;--surface:#191714;--surface2:#232018;--border:#2E2B25;--border2:#3D3830;--gold:#D4A84B;--gold2:#F0C866;--gold3:#8A6A20;--green:#3D7A52;--green2:#5FAF7A;--red:#8A3030;--red2:#C44F4F;--amber:#8A5A1A;--amber2:#C88A3A;--blue:#2A5A8A;--blue2:#4A8AC4;--text:#F0EAD8;--text2:#A89880;--text3:#6A5E50;--mono:'IBM Plex Mono',monospace;}
 body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-serif;min-height:100vh;-webkit-font-smoothing:antialiased;}
-.app{max-width:960px;margin:0 auto;padding:0 16px 80px}
-.header{padding:32px 0 24px;border-bottom:1px solid var(--border);margin-bottom:24px;display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px}
-.header h1{font-family:'Playfair Display',serif;font-size:1.8rem;font-weight:400;letter-spacing:-0.01em}
+.app{max-width:1000px;margin:0 auto;padding:0 16px 80px}
+.header{padding:28px 0 20px;border-bottom:1px solid var(--border);margin-bottom:22px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.header h1{font-family:'Playfair Display',serif;font-size:1.7rem;font-weight:400;letter-spacing:-0.01em}
 .header h1 span{color:var(--gold);font-style:italic}
-.header p{color:var(--text2);font-size:0.78rem;margin-top:3px;font-weight:300}
-.profile-chip{background:var(--surface2);border:1px solid var(--border2);border-radius:6px;padding:7px 12px;font-size:0.72rem;color:var(--text2);font-family:var(--mono)}
+.header p{color:var(--text2);font-size:0.75rem;margin-top:2px;font-weight:300}
+.profile-chip{background:var(--surface2);border:1px solid var(--border2);border-radius:6px;padding:6px 12px;font-size:0.72rem;color:var(--text2);font-family:var(--mono);cursor:pointer;transition:border-color 0.15s}
+.profile-chip:hover{border-color:var(--gold3)}
 .profile-chip strong{color:var(--gold);display:block;font-size:0.68rem;margin-bottom:1px}
-.tabs{display:flex;gap:2px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:3px;margin-bottom:20px}
-.tab{flex:1;padding:8px 10px;border-radius:5px;border:none;background:transparent;color:var(--text2);font-family:'IBM Plex Sans',sans-serif;font-size:0.78rem;font-weight:500;cursor:pointer;transition:all 0.15s;text-align:center}
+.tabs{display:flex;gap:2px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:3px;margin-bottom:18px;flex-wrap:wrap}
+.tab{flex:1;min-width:80px;padding:8px 6px;border-radius:5px;border:none;background:transparent;color:var(--text2);font-family:'IBM Plex Sans',sans-serif;font-size:0.73rem;font-weight:500;cursor:pointer;transition:all 0.15s;text-align:center;white-space:nowrap}
 .tab.active{background:var(--gold3);color:var(--gold2)}
 .tab:hover:not(.active){color:var(--text);background:var(--surface2)}
 .tab:disabled{opacity:0.35;cursor:not-allowed}
 .section{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:14px}
 .stitle{font-family:'Playfair Display',serif;font-size:0.95rem;color:var(--gold);margin-bottom:14px;display:flex;align-items:center;gap:8px}
 .stitle::after{content:'';flex:1;height:1px;background:var(--border)}
-textarea{width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:7px;padding:11px 13px;color:var(--text);font-family:var(--mono);font-size:0.8rem;outline:none;resize:vertical;min-height:100px;line-height:1.5;transition:border-color 0.15s}
+textarea{width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:7px;padding:11px 13px;color:var(--text);font-family:var(--mono);font-size:0.8rem;outline:none;resize:vertical;min-height:90px;line-height:1.5;transition:border-color 0.15s}
 textarea:focus{border-color:var(--gold3)}
 textarea::placeholder{color:var(--text3)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:9px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px}
-@media(max-width:580px){.grid3{grid-template-columns:1fr 1fr}}
+.grid4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:9px}
+@media(max-width:700px){.grid3,.grid4{grid-template-columns:1fr 1fr}}
+@media(max-width:480px){.grid2{grid-template-columns:1fr}}
 .field{display:flex;flex-direction:column;gap:3px}
-.field label{font-size:0.68rem;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:0.05em}
+.field label{font-size:0.67rem;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:0.05em}
 .field input,.field select{background:var(--surface2);border:1px solid var(--border2);border-radius:6px;padding:8px 10px;color:var(--text);font-family:var(--mono);font-size:0.82rem;outline:none;transition:border-color 0.15s;width:100%}
 .field input:focus,.field select:focus{border-color:var(--gold3)}
 .field select option{background:var(--surface2)}
-.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border)}
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)}
 .toggle-row label{font-size:0.8rem;color:var(--text2)}
-.toggle{position:relative;width:38px;height:21px;cursor:pointer}
+.toggle{position:relative;width:36px;height:20px;cursor:pointer;flex-shrink:0}
 .toggle input{opacity:0;width:0;height:0}
-.tslider{position:absolute;inset:0;background:var(--border2);border-radius:11px;transition:0.2s}
-.tslider::before{content:'';position:absolute;width:15px;height:15px;left:3px;bottom:3px;background:var(--text3);border-radius:50%;transition:0.2s}
+.tslider{position:absolute;inset:0;background:var(--border2);border-radius:10px;transition:0.2s}
+.tslider::before{content:'';position:absolute;width:14px;height:14px;left:3px;bottom:3px;background:var(--text3);border-radius:50%;transition:0.2s}
 .toggle input:checked+.tslider{background:var(--gold3)}
-.toggle input:checked+.tslider::before{transform:translateX(17px);background:var(--gold2)}
-.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:7px;border:none;font-family:'IBM Plex Sans',sans-serif;font-size:0.85rem;font-weight:500;cursor:pointer;transition:all 0.15s}
+.toggle input:checked+.tslider::before{transform:translateX(16px);background:var(--gold2)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 16px;border-radius:7px;border:none;font-family:'IBM Plex Sans',sans-serif;font-size:0.83rem;font-weight:500;cursor:pointer;transition:all 0.15s}
 .btn-gold{background:var(--gold3);color:var(--gold2);border:1px solid var(--gold)}
 .btn-gold:hover{background:var(--gold);color:#0F0E0C}
+.btn-blue{background:var(--blue);color:var(--blue2);border:1px solid var(--blue2)}
+.btn-blue:hover{background:var(--blue2);color:#fff}
 .btn-outline{background:transparent;color:var(--text2);border:1px solid var(--border2)}
 .btn-outline:hover{border-color:var(--text2);color:var(--text)}
+.btn-danger{background:rgba(138,48,48,0.2);color:var(--red2);border:1px solid var(--red)}
+.btn-danger:hover{background:var(--red);color:#fff}
 .btn:disabled{opacity:0.4;cursor:not-allowed}
-.btn-full{width:100%;justify-content:center;padding:12px;font-size:0.92rem;margin-top:6px}
+.btn-full{width:100%;justify-content:center;padding:12px;font-size:0.9rem;margin-top:6px}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .lbar{height:2px;background:var(--border);border-radius:1px;overflow:hidden;margin:10px 0}
 .lbar-fill{height:100%;background:linear-gradient(90deg,var(--gold3),var(--gold2),var(--gold3));background-size:200%;animation:shimmer 1.2s infinite}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
-.ltext{font-size:0.78rem;color:var(--text2);font-family:var(--mono)}
+.ltext{font-size:0.77rem;color:var(--text2);font-family:var(--mono)}
+.mode-badge{font-size:0.63rem;padding:2px 6px;border-radius:10px;font-family:var(--mono);margin-left:5px}
+.mode-normal{background:rgba(212,168,75,0.15);color:var(--gold);border:1px solid var(--gold3)}
+.mode-approfondi{background:rgba(74,138,196,0.15);color:var(--blue2);border:1px solid var(--blue)}
 .pprev{background:var(--surface2);border:1px solid var(--border2);border-radius:8px;padding:13px;margin:10px 0}
 .pprev h4{font-size:0.7rem;color:var(--gold);font-family:var(--mono);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:9px}
 .chips{display:flex;flex-wrap:wrap;gap:5px}
 .chip{background:var(--surface);border:1px solid var(--border2);border-radius:4px;padding:3px 8px;font-size:0.72rem;font-family:var(--mono);color:var(--text2)}
-.chip span{color:var(--text);font-weight:500}
+.chip span{color:var(--text)}
 .achip{border-color:#8A3030;color:#C44F4F;background:rgba(138,48,48,0.1)}
 .wchip{border-color:#8A5A1A;color:#C88A3A;background:rgba(138,90,26,0.1)}
-.score-banner{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 22px;display:flex;align-items:center;gap:18px;margin-bottom:14px;flex-wrap:wrap}
-.score-circle{width:68px;height:68px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;border:2px solid currentColor;flex-shrink:0}
-.snum{font-family:'Playfair Display',serif;font-size:1.5rem;font-weight:600;line-height:1}
+.okchip{border-color:#3D7A52;color:#5FAF7A;background:rgba(61,122,82,0.08)}
+.expert-box{background:rgba(74,138,196,0.08);border:1px solid var(--blue);border-radius:8px;padding:13px;margin-top:10px;font-size:0.8rem;color:var(--text2);line-height:1.6}
+.expert-box strong{color:var(--blue2);font-family:var(--mono);font-size:0.7rem;display:block;margin-bottom:6px;text-transform:uppercase}
+.score-banner{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 20px;display:flex;align-items:center;gap:16px;margin-bottom:12px;flex-wrap:wrap}
+.score-circle{width:64px;height:64px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;border:2px solid currentColor;flex-shrink:0}
+.snum{font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:600;line-height:1}
 .sten{font-size:0.6rem;color:var(--text3);font-family:var(--mono)}
 .sinfo{flex:1;min-width:180px}
-.sinfo h3{font-family:'Playfair Display',serif;font-size:1.05rem}
-.sinfo p{font-size:0.76rem;color:var(--text2);margin-top:3px;line-height:1.4}
-.ebar{margin-top:8px}
-.elabel{font-size:0.68rem;color:var(--text3);font-family:var(--mono);margin-bottom:3px;display:flex;justify-content:space-between}
+.sinfo h3{font-family:'Playfair Display',serif;font-size:1rem}
+.sinfo p{font-size:0.73rem;color:var(--text2);margin-top:2px;line-height:1.4}
+.ebar{margin-top:7px}
+.elabel{font-size:0.67rem;color:var(--text3);font-family:var(--mono);margin-bottom:3px;display:flex;justify-content:space-between}
 .btrack{height:5px;background:var(--border);border-radius:3px;overflow:hidden}
 .bfill{height:100%;border-radius:3px;transition:width 0.5s ease}
-.mgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:14px}
-@media(max-width:480px){.mgrid{grid-template-columns:repeat(2,1fr)}}
-.mcard{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px}
-.mlabel{font-size:0.65rem;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:5px}
-.mval{font-family:var(--mono);font-size:1.05rem;font-weight:500}
-.msub{font-size:0.67rem;color:var(--text2);margin-top:2px}
+.mgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px}
+@media(max-width:500px){.mgrid{grid-template-columns:repeat(2,1fr)}}
+.mcard{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:11px}
+.mlabel{font-size:0.63rem;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px}
+.mval{font-family:var(--mono);font-size:1rem;font-weight:500}
+.msub{font-size:0.65rem;color:var(--text2);margin-top:2px}
 .pos{color:var(--green2)!important}.neg{color:var(--red2)!important}.warn{color:var(--amber2)!important}
-.stabs{display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap}
-.stab{padding:6px 12px;border-radius:6px;border:1px solid var(--border2);background:transparent;color:var(--text2);font-size:0.77rem;font-family:'IBM Plex Sans',sans-serif;cursor:pointer;transition:all 0.15s}
+.stabs{display:flex;gap:3px;margin-bottom:10px;flex-wrap:wrap}
+.stab{padding:6px 11px;border-radius:6px;border:1px solid var(--border2);background:transparent;color:var(--text2);font-size:0.76rem;font-family:'IBM Plex Sans',sans-serif;cursor:pointer;transition:all 0.15s}
 .stab.active{background:var(--surface2);color:var(--text);border-color:var(--gold3)}
 .sp{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px}
-.sp-hdr{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px}
-.sp-hdr h3{font-family:'Playfair Display',serif;font-size:1.05rem}
-.sp-hdr p{font-size:0.75rem;color:var(--text2);margin-top:2px}
-.bigcf{font-family:var(--mono);font-size:1.8rem;font-weight:500}
-.bigcf-l{font-size:0.68rem;color:var(--text3);font-family:var(--mono);text-transform:uppercase}
-.bktable{width:100%;border-collapse:collapse;font-size:0.77rem;margin-top:10px}
+.sp-hdr{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:13px;flex-wrap:wrap;gap:8px}
+.sp-hdr h3{font-family:'Playfair Display',serif;font-size:1rem}
+.sp-hdr p{font-size:0.73rem;color:var(--text2);margin-top:2px}
+.bigcf{font-family:var(--mono);font-size:1.7rem;font-weight:500}
+.bigcf-l{font-size:0.67rem;color:var(--text3);font-family:var(--mono);text-transform:uppercase}
+.bktable{width:100%;border-collapse:collapse;font-size:0.76rem;margin-top:10px}
 .bktable tr{border-bottom:1px solid var(--border)}
-.bktable tr:last-child{border-bottom:none}
-.bktable td{padding:6px 3px;color:var(--text2);font-family:var(--mono)}
+.bktable td{padding:5px 3px;color:var(--text2);font-family:var(--mono)}
 .bktable td:last-child{text-align:right;color:var(--text)}
-.bktable .sub td{padding-left:12px;color:var(--text3)!important;font-size:0.72rem}
-.bktable .trow td{color:var(--gold)!important;border-top:1px solid var(--border2);padding-top:8px;font-weight:500}
+.bktable .sub td{padding-left:12px;color:var(--text3)!important;font-size:0.7rem}
+.bktable .trow td{color:var(--gold)!important;border-top:1px solid var(--border2);padding-top:7px;font-weight:500}
 .sgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:10px}
-@media(max-width:480px){.sgrid{grid-template-columns:1fr}}
+@media(max-width:500px){.sgrid{grid-template-columns:1fr}}
 .scard{background:var(--surface2);border:1px solid var(--border2);border-radius:8px;padding:12px}
 .scard.best{border-color:var(--gold3);background:rgba(138,106,32,0.08)}
-.scard h4{font-size:0.7rem;font-family:var(--mono);color:var(--gold);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.04em}
-.scard .scf{font-family:var(--mono);font-size:1.05rem;font-weight:500;margin-bottom:3px}
-.scard p{font-size:0.7rem;color:var(--text2);line-height:1.4}
-.bbadge{font-size:0.6rem;background:var(--gold3);color:var(--gold2);padding:1px 5px;border-radius:3px;margin-left:5px;vertical-align:middle}
-.abox{border-radius:7px;padding:10px 13px;font-size:0.77rem;margin-bottom:8px;display:flex;gap:9px;align-items:flex-start;line-height:1.5}
+.scard h4{font-size:0.68rem;font-family:var(--mono);color:var(--gold);margin-bottom:5px;text-transform:uppercase;letter-spacing:0.04em}
+.scard .scf{font-family:var(--mono);font-size:1rem;font-weight:500;margin-bottom:3px}
+.scard p{font-size:0.68rem;color:var(--text2);line-height:1.4}
+.bbadge{font-size:0.58rem;background:var(--gold3);color:var(--gold2);padding:1px 5px;border-radius:3px;margin-left:4px;vertical-align:middle}
+.abox{border-radius:7px;padding:9px 12px;font-size:0.76rem;margin-bottom:7px;display:flex;gap:8px;align-items:flex-start;line-height:1.5}
 .abox.danger{background:rgba(138,48,48,0.12);border:1px solid #8A3030;color:#C44F4F}
 .abox.warning{background:rgba(138,90,26,0.1);border:1px solid #8A5A1A;color:#C88A3A}
 .abox.info{background:rgba(61,122,82,0.08);border:1px solid #3D7A52;color:#5FAF7A}
-.aicon{font-size:0.95rem;flex-shrink:0}
-.dvd{height:1px;background:var(--border);margin:13px 0}
-.atable{width:100%;border-collapse:collapse;font-size:0.75rem;font-family:var(--mono)}
-.atable th{text-align:right;color:var(--text3);font-weight:400;padding:5px 7px;border-bottom:1px solid var(--border);font-size:0.67rem;text-transform:uppercase;letter-spacing:0.04em}
+.abox.blue{background:rgba(42,90,138,0.1);border:1px solid #2A5A8A;color:#4A8AC4}
+.aicon{font-size:0.9rem;flex-shrink:0}
+.dvd{height:1px;background:var(--border);margin:12px 0}
+.atable{width:100%;border-collapse:collapse;font-size:0.74rem;font-family:var(--mono)}
+.atable th{text-align:right;color:var(--text3);font-weight:400;padding:5px 7px;border-bottom:1px solid var(--border);font-size:0.65rem;text-transform:uppercase;letter-spacing:0.04em}
 .atable th:first-child{text-align:left}
 .atable td{text-align:right;padding:5px 7px;border-bottom:1px solid var(--border);color:var(--text2)}
 .atable td:first-child{text-align:left;color:var(--text3)}
 .atable tr:hover td{background:var(--surface2)}
 .sep-row td{background:var(--border2);height:1px;padding:0}
+.proj-table{width:100%;border-collapse:collapse;font-size:0.73rem;font-family:var(--mono)}
+.proj-table th{text-align:right;color:var(--text3);font-weight:400;padding:5px 8px;border-bottom:1px solid var(--border);font-size:0.63rem;text-transform:uppercase;white-space:nowrap}
+.proj-table th:first-child,.proj-table td:first-child{text-align:left}
+.proj-table td{text-align:right;padding:5px 8px;border-bottom:1px solid var(--border);color:var(--text2);white-space:nowrap}
+.proj-table td:first-child{color:var(--text3)}
+.stress-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:7px;margin-top:10px}
+@media(max-width:500px){.stress-grid{grid-template-columns:1fr}}
+.stress-card{background:var(--surface2);border:1px solid var(--border2);border-radius:7px;padding:11px}
+.stress-card h5{font-size:0.68rem;font-family:var(--mono);color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:5px}
+.stress-card .sv{font-family:var(--mono);font-size:0.95rem;font-weight:500}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:100;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto}
+.modal{background:var(--surface);border:1px solid var(--border2);border-radius:12px;padding:24px;max-width:720px;width:100%;margin:auto}
+.modal h2{font-family:'Playfair Display',serif;font-size:1.2rem;color:var(--gold);margin-bottom:20px}
 `;
+
+function ProfilModal({ profil, onSave, onClose }: { profil: ProfilInvestisseur; onSave: (p: ProfilInvestisseur) => void; onClose: () => void }) {
+  const [p, setP] = useState<ProfilInvestisseur>({ ...profil });
+  const sv = (k: keyof ProfilInvestisseur, v: any) => setP(prev => ({ ...prev, [k]: v }));
+
+  const addBien = () => setP(prev => ({
+    ...prev,
+    biens: [...prev.biens, { id: Date.now().toString(), type: "appartement", description: "", valeurEstimee: 0, capitalRestantDu: 0, mensualiteCredit: 0, loyerMensuelPercu: 0, regimeFiscal: "lmnp_reel" }]
+  }));
+
+  const updBien = (id: string, k: keyof BienPatrimoine, v: any) =>
+    setP(prev => ({ ...prev, biens: prev.biens.map(b => b.id === id ? { ...b, [k]: v } : b) }));
+
+  const delBien = (id: string) =>
+    setP(prev => ({ ...prev, biens: prev.biens.filter(b => b.id !== id) }));
+
+  const NF = ({ label, k, suffix, step }: { label: string; k: keyof ProfilInvestisseur; suffix?: string; step?: number }) => (
+    <div className="field">
+      <label>{label}{suffix ? ` (${suffix})` : ""}</label>
+      <input type="number" value={p[k] as number} step={step || 1}
+        onChange={e => sv(k, parseFloat(e.target.value) || 0)} />
+    </div>
+  );
+
+  const TF = ({ label, k, suffix, step }: { label: string; k: keyof ProfilInvestisseur; suffix?: string; step?: number }) => (
+    <div className="field">
+      <label>{label}{suffix ? ` (${suffix})` : ""}</label>
+      <input type="text" value={p[k] as string}
+        onChange={e => sv(k, e.target.value)} />
+    </div>
+  );
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <h2>✎ Profil Investisseur</h2>
+
+        <div className="section" style={{ marginBottom: 12 }}>
+          <div className="stitle">Identité</div>
+          <div className="grid3">
+            <TF label="Prénom" k="prenom" />
+            <div className="field">
+              <label>Situation familiale</label>
+              <select value={p.situationFamiliale} onChange={e => sv("situationFamiliale", e.target.value)}>
+                <option value="celibataire">Célibataire</option>
+                <option value="marie">Marié(e)</option>
+                <option value="pacse">Pacsé(e)</option>
+                <option value="divorce">Divorcé(e)</option>
+                <option value="veuf">Veuf / Veuve</option>
+              </select>
+            </div>
+            <NF label="Nombre d'enfants" k="nbEnfants" />
+          </div>
+          <div className="grid3" style={{ marginTop: 9 }}>
+            <NF label="Parts fiscales (QF)" k="nbPartsFC" step={0.5} />
+            <div className="field">
+              <label>TMI</label>
+              <select value={p.tmi} onChange={e => sv("tmi", parseInt(e.target.value))}>
+                {[0,11,30,41,45].map(t => <option key={t} value={t}>{t}%</option>)}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div className="section" style={{ marginBottom: 12 }}>
+          <div className="stitle">Revenus annuels bruts</div>
+          <div className="grid3">
+            <NF label="Salaire brut" k="salaireBrutAnnuel" suffix="€" />
+            <NF label="Bonus annuel" k="bonusAnnuel" suffix="€" />
+            <NF label="Autres revenus" k="autresRevenusAnnuels" suffix="€" />
+          </div>
+          <p style={{ fontSize: "0.7rem", color: "var(--text3)", marginTop: 8, fontFamily: "var(--mono)" }}>
+            Revenus bruts mensuels : {fmt((p.salaireBrutAnnuel + p.bonusAnnuel + p.autresRevenusAnnuels) / 12)} € · Capacité emprunt (35% HCSF) : {fmt((p.salaireBrutAnnuel + p.bonusAnnuel + p.autresRevenusAnnuels) / 12 * 0.35 - p.mensualiteRP - p.biens.reduce((s,b) => s + b.mensualiteCredit, 0))} €/mois
+          </p>
+        </div>
+
+        <div className="section" style={{ marginBottom: 12 }}>
+          <div className="stitle">Résidence Principale</div>
+          <div className="grid3">
+            <NF label="Mensualité crédit RP" k="mensualiteRP" suffix="€/mois" />
+            <NF label="Valeur estimée RP" k="valeurRP" suffix="€" />
+            <NF label="Capital restant dû" k="capitalRestantDuRP" suffix="€" />
+          </div>
+        </div>
+
+        <div className="section" style={{ marginBottom: 12 }}>
+          <div className="stitle">Patrimoine immobilier</div>
+          {p.biens.length === 0 && (
+            <p style={{ fontSize: "0.77rem", color: "var(--text3)", marginBottom: 10 }}>Aucun bien. Ajoutez vos investissements existants pour un calcul d'endettement précis.</p>
+          )}
+          {p.biens.map(b => (
+            <div key={b.id} style={{ background: "var(--surface2)", border: "1px solid var(--border2)", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+              <div className="grid3" style={{ marginBottom: 8 }}>
+                <div className="field">
+                  <label>Type de bien</label>
+                  <select value={b.type} onChange={e => updBien(b.id, "type", e.target.value)}>
+                    <option value="appartement">Appartement</option>
+                    <option value="maison">Maison</option>
+                    <option value="immeuble">Immeuble de rapport</option>
+                    <option value="parking">Parking / Box</option>
+                    <option value="commerce">Local commercial</option>
+                    <option value="sci_ir">SCI à l'IR</option>
+                    <option value="sci_is">SCI à l'IS</option>
+                    <option value="scpi">SCPI</option>
+                    <option value="autre">Autre</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Description</label>
+                  <input type="text" value={b.description} placeholder="Ex: Studio Paris 11e"
+                    onChange={e => updBien(b.id, "description", e.target.value)} />
+                </div>
+                <div className="field">
+                  <label>Régime fiscal</label>
+                  <select value={b.regimeFiscal} onChange={e => updBien(b.id, "regimeFiscal", e.target.value)}>
+                    <option value="lmnp_reel">LMNP Réel</option>
+                    <option value="lmnp_micro">LMNP Micro-BIC</option>
+                    <option value="foncier_reel">Foncier Réel</option>
+                    <option value="micro_foncier">Micro-Foncier</option>
+                    <option value="sci_ir">SCI IR</option>
+                    <option value="sci_is">SCI IS</option>
+                    <option value="scpi">SCPI</option>
+                    <option value="rp">Résidence Principale</option>
+                    <option value="autre">Autre</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid4">
+                {(["valeurEstimee","capitalRestantDu","mensualiteCredit","loyerMensuelPercu"] as (keyof BienPatrimoine)[]).map(k => (
+                  <div key={k} className="field">
+                    <label>{k === "valeurEstimee" ? "Valeur estimée (€)" : k === "capitalRestantDu" ? "Capital restant dû (€)" : k === "mensualiteCredit" ? "Mensualité crédit (€)" : "Loyer perçu (€/mois)"}</label>
+                    <input type="number" value={b[k] as number}
+                      onChange={e => updBien(b.id, k, parseFloat(e.target.value) || 0)} />
+                  </div>
+                ))}
+              </div>
+              <button className="btn btn-danger" style={{ marginTop: 8, padding: "5px 10px", fontSize: "0.73rem" }} onClick={() => delBien(b.id)}>
+                Supprimer
+              </button>
+            </div>
+          ))}
+          <button className="btn btn-outline" style={{ marginTop: 6 }} onClick={addBien}>+ Ajouter un bien</button>
+          {p.biens.length > 0 && (
+            <div style={{ marginTop: 10, fontSize: "0.72rem", color: "var(--text3)", fontFamily: "var(--mono)" }}>
+              Patrimoine brut : {fe(p.valeurRP + p.biens.reduce((s,b) => s + b.valeurEstimee, 0))} · 
+              Dettes totales : {fe(p.capitalRestantDuRP + p.biens.reduce((s,b) => s + b.capitalRestantDu, 0))} ·
+              Mensualités totales : {fe(p.mensualiteRP + p.biens.reduce((s,b) => s + b.mensualiteCredit, 0))}/mois
+            </div>
+          )}
+        </div>
+
+        <div className="section" style={{ marginBottom: 12 }}>
+          <div className="stitle">Capacité & Objectifs</div>
+          <div className="grid3">
+            <NF label="Apport disponible" k="apportDisponible" suffix="€" />
+            <NF label="Épargne de sécurité" k="epargneSecurite" suffix="€" />
+            <NF label="Horizon de détention" k="horizonDetention" suffix="ans" />
+          </div>
+          <div className="grid3" style={{ marginTop: 9 }}>
+            <div className="field">
+              <label>Objectif principal</label>
+              <select value={p.objectif} onChange={e => sv("objectif", e.target.value)}>
+                <option value="cashflow">Cashflow immédiat</option>
+                <option value="patrimoine">Constitution de patrimoine</option>
+                <option value="defiscalisation">Défiscalisation</option>
+                <option value="retraite">Préparation retraite</option>
+                <option value="mixte">Mixte</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Tolérance au risque</label>
+              <select value={p.toleranceRisque} onChange={e => sv("toleranceRisque", e.target.value)}>
+                <option value="faible">Faible — sécurité avant tout</option>
+                <option value="modere">Modérée — équilibré</option>
+                <option value="eleve">Élevée — j'accepte le risque</option>
+              </select>
+            </div>
+            <TF label="Zone cible" k="zoneCible" />
+          </div>
+          <div className="toggle-row" style={{ marginTop: 10 }}>
+            <label>Gestion directe (sans agence locative)</label>
+            <label className="toggle">
+              <input type="checkbox" checked={p.gestionDirecte} onChange={e => sv("gestionDirecte", e.target.checked)} />
+              <span className="tslider" />
+            </label>
+          </div>
+        </div>
+
+        <div className="btn-row">
+          <button className="btn btn-gold" onClick={() => { onSave(p); onClose(); }}>✓ Sauvegarder</button>
+          <button className="btn btn-outline" onClick={onClose}>Annuler</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const [tab, setTab] = useState("saisie");
-  const [inputs, setInputs] = useState<Inputs>(DEFAULTS);
+  const [inputs, setInputs] = useState<InputsBien>(DEFAULT_INPUTS);
+  const [profil, setProfil] = useState<ProfilInvestisseur>(loadProfil);
+  const [showProfil, setShowProfil] = useState(false);
   const [urlText, setUrlText] = useState("");
+  const [analyzeMode, setAnalyzeMode] = useState<"normal" | "approfondi">("normal");
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [parsed, setParsed] = useState<any>(null);
-  const [results, setResults] = useState<any>(null);
+  const [results, setResults] = useState<ResultatsComplets | null>(null);
   const [sTab, setSTab] = useState("lld");
 
-  const setIn = (k: keyof Inputs, v: any) => setInputs(prev => ({ ...prev, [k]: v }));
+  const setIn = (k: keyof InputsBien, v: any) => setInputs(prev => ({ ...prev, [k]: v }));
 
   const handleAnalyze = async () => {
     if (!urlText.trim()) return;
     setLoading(true);
-    setLoadingMsg("Analyse IA de l'annonce…");
+    setLoadingMsg(analyzeMode === "approfondi" ? "Analyse approfondie Opus en cours…" : "Analyse Sonnet en cours…");
     try {
-      const data = await analyzeWithAI(urlText);
+      const data = await analyzeAnnonce(urlText, analyzeMode);
       setParsed(data);
-      const merged = {
+      const merged: InputsBien = {
         ...inputs,
-        prix: data.prix > 0 ? data.prix : inputs.prix,
-        surface: data.surface > 0 ? data.surface : inputs.surface,
+        prix: Number(data.prix) > 0 ? Number(data.prix) : inputs.prix,
+        surface: Number(data.surface) > 0 ? Number(data.surface) : inputs.surface,
         dpe: data.dpe || inputs.dpe,
-        charges: data.charges || inputs.charges,
-        taxeFonciere: data.taxeFonciere || inputs.taxeFonciere,
-        loyerEstime: data.loyerEstime || inputs.loyerEstime,
-        prixNuitAirbnb: data.prixNuitAirbnbEstime || inputs.prixNuitAirbnb,
-        occupancyAirbnb: data.occupancyAirbnbEstime || inputs.occupancyAirbnb,
-        travaux: data.travauxEstimes || inputs.travaux,
-        ameublement: data.ameublementEstime || inputs.ameublement,
-        fraisAgencePct: data.fraisAgencePct || inputs.fraisAgencePct,
+        charges: Number(data.charges) > 0 ? Number(data.charges) : inputs.charges,
+        taxeFonciere: Number(data.taxeFonciere) > 0 ? Number(data.taxeFonciere) : inputs.taxeFonciere,
+        fondsTravauxCopro: Number(data.fondsTravauxCopro) > 0 ? Number(data.fondsTravauxCopro) : inputs.fondsTravauxCopro,
+        loyerEstime: Number(data.loyerEstime) > 0 ? Number(data.loyerEstime) : inputs.loyerEstime,
+        loyerMaxEncadre: Number(data.loyerMaxEncadre) > 0 ? Number(data.loyerMaxEncadre) : inputs.loyerMaxEncadre,
+        encadrementLoyers: typeof data.encadrementLoyers === "boolean" ? data.encadrementLoyers : inputs.encadrementLoyers,
+        prixNuitAirbnb: Number(data.prixNuitAirbnbEstime) > 0 ? Number(data.prixNuitAirbnbEstime) : inputs.prixNuitAirbnb,
+        occupancyAirbnb: Number(data.occupancyAirbnbEstime) > 0 ? Number(data.occupancyAirbnbEstime) : inputs.occupancyAirbnb,
+        travaux: Number(data.travauxEstimes) >= 0 ? Number(data.travauxEstimes) : inputs.travaux,
+        ameublement: Number(data.ameublementEstime) >= 0 ? Number(data.ameublementEstime) : inputs.ameublement,
+        fraisAgencePct: Number(data.fraisAgencePct) >= 0 ? Number(data.fraisAgencePct) : inputs.fraisAgencePct,
+        ville: data.ville || inputs.ville,
+        tensionLocative: data.tensionLocative || inputs.tensionLocative,
       };
       setInputs(merged);
-      setLoadingMsg("Calcul du modèle financier…");
-      setResults(computeModel(merged));
+      setResults(computeModel(merged, profil));
       setTab("resultats");
     } catch (e: any) {
-      alert("Erreur : " + e.message);
+      alert("Erreur d'analyse : " + e.message);
     }
     setLoading(false);
   };
 
   const handleCompute = () => {
-    setResults(computeModel(inputs));
+    setResults(computeModel(inputs, profil));
     setTab("resultats");
   };
 
-  const F = ({ label, k, step, suffix, min, max }: { label: string; k: keyof Inputs; step?: number; suffix?: string; min?: number; max?: number }) => (
+  const F = ({ label, k, step, suffix, min, max }: { label: string; k: keyof InputsBien; step?: number; suffix?: string; min?: number; max?: number }) => (
     <div className="field">
       <label>{label}{suffix ? ` (${suffix})` : ""}</label>
       <input type="number" value={inputs[k] as number} step={step || 1} min={min} max={max}
@@ -386,40 +431,49 @@ export default function App() {
   );
 
   const r = results;
+  const revenuMensuel = (profil.salaireBrutAnnuel + profil.bonusAnnuel + profil.autresRevenusAnnuels) / 12;
 
   return (
     <>
       <style>{css}</style>
+      {showProfil && <ProfilModal profil={profil} onSave={p => { setProfil(p); saveProfil(p); }} onClose={() => setShowProfil(false)} />}
       <div className="app">
         <div className="header">
           <div>
             <h1>Invest<span>Immo</span></h1>
-            <p>Modèle d'analyse locative — Profil Louis</p>
+            <p>Modèle d'analyse locative professionnel</p>
           </div>
-          <div className="profile-chip">
-            <strong>PROFIL INVESTISSEUR</strong>
-            TMI 30% · RP 1 271€/mois · Paris
+          <div className="profile-chip" onClick={() => setShowProfil(true)}>
+            <strong>PROFIL INVESTISSEUR ✎</strong>
+            {profil.prenom || "Cliquez pour configurer"} · TMI {profil.tmi}% · RP {fmt(profil.mensualiteRP)}€/mois
           </div>
         </div>
 
         <div className="tabs">
-          {[["saisie","① Saisie"],["parametres","② Paramètres"],["resultats","③ Résultats"],["amort","④ Tableau prêt"]].map(([id,label]) => (
+          {[["saisie","① Saisie"],["parametres","② Paramètres"],["resultats","③ Résultats"],["projections","④ Projections"],["amort","⑤ Prêt"]].map(([id,label]) => (
             <button key={id} className={`tab ${tab === id ? "active" : ""}`}
-              onClick={() => setTab(id)} disabled={["resultats","amort"].includes(id) && !results}>
+              onClick={() => setTab(id)} disabled={["resultats","projections","amort"].includes(id) && !r}>
               {label}
             </button>
           ))}
         </div>
 
-        {/* SAISIE */}
         {tab === "saisie" && (
           <>
             <div className="section">
               <div className="stitle">Analyser une annonce</div>
-              <textarea placeholder={"Colle ici :\n• L'URL de l'annonce (SeLoger, LeBonCoin, PAP…)\n• Ou le texte complet du descriptif\n\nL'IA extraira toutes les données automatiquement."} value={urlText} onChange={e => setUrlText(e.target.value)} />
-              <div style={{ marginTop: 9, display: "flex", gap: 7, flexWrap: "wrap" }}>
-                <button className="btn btn-gold" onClick={handleAnalyze} disabled={loading || !urlText.trim()}>
-                  {loading ? "Analyse…" : "✦ Analyser avec l'IA"}
+              <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                <button className={`btn ${analyzeMode === "normal" ? "btn-gold" : "btn-outline"}`} onClick={() => setAnalyzeMode("normal")}>
+                  Sonnet <span className="mode-badge mode-normal">Rapide</span>
+                </button>
+                <button className={`btn ${analyzeMode === "approfondi" ? "btn-blue" : "btn-outline"}`} onClick={() => setAnalyzeMode("approfondi")}>
+                  Opus <span className="mode-badge mode-approfondi">Approfondi</span>
+                </button>
+              </div>
+              <textarea placeholder={"Colle ici l'URL ou le texte complet de l'annonce.\n\nSonnet : extraction rapide des données (quelques centimes)\nOpus : analyse experte avec détection de risques cachés (~10 centimes)"} value={urlText} onChange={e => setUrlText(e.target.value)} style={{ minHeight: 100 }} />
+              <div className="btn-row">
+                <button className={`btn ${analyzeMode === "approfondi" ? "btn-blue" : "btn-gold"}`} onClick={handleAnalyze} disabled={loading || !urlText.trim()}>
+                  {loading ? "Analyse en cours…" : analyzeMode === "approfondi" ? "✦ Analyse Opus approfondie" : "✦ Analyser avec l'IA"}
                 </button>
                 <button className="btn btn-outline" onClick={() => { setParsed(null); setUrlText(""); }}>Réinitialiser</button>
               </div>
@@ -428,24 +482,29 @@ export default function App() {
 
             {parsed && (
               <div className="pprev">
-                <h4>✓ Données extraites par l'IA</h4>
+                <h4>✓ Données extraites {analyzeMode === "approfondi" && <span className="mode-badge mode-approfondi">Opus</span>}</h4>
                 <div className="chips">
-                  <div className="chip">{parsed.typeLogement} · <span>{parsed.localisation}</span></div>
-                  <div className="chip">Prix <span>{fe(parsed.prix)}</span></div>
-                  <div className="chip">Surface <span>{parsed.surface} m²</span></div>
-                  <div className="chip">DPE <span>{parsed.dpe || "?"}</span></div>
-                  <div className="chip">Loyer estimé <span>{fe(parsed.loyerEstime)}/mois</span></div>
-                  <div className="chip">Airbnb <span>{fe(parsed.prixNuitAirbnbEstime)}/nuit · {parsed.occupancyAirbnbEstime}%</span></div>
+                  {parsed.typeLogement && <div className="chip">{parsed.typeLogement} · <span>{parsed.localisation}</span></div>}
+                  {parsed.prix > 0 && <div className="chip">Prix <span>{fe(parsed.prix)}</span></div>}
+                  {parsed.surface > 0 && <div className="chip">Surface <span>{parsed.surface} m²</span></div>}
+                  {parsed.prixM2Bien > 0 && parsed.prixM2Marche > 0 && <div className={`chip ${parsed.prixM2Bien > parsed.prixM2Marche * 1.05 ? "wchip" : "okchip"}`}>Prix/m² <span>{fmt(parsed.prixM2Bien)}€</span> vs marché <span>{fmt(parsed.prixM2Marche)}€</span></div>}
+                  {parsed.dpe && <div className={`chip ${["F","G"].includes(parsed.dpe) ? "achip" : parsed.dpe === "E" ? "wchip" : ""}`}>DPE <span>{parsed.dpe}</span></div>}
+                  {parsed.charges > 0 && <div className="chip">Charges <span>{fe(parsed.charges)}/mois</span></div>}
+                  {parsed.loyerEstime > 0 && <div className="chip">Loyer <span>{fe(parsed.loyerEstime)}/mois</span></div>}
+                  {parsed.prixNuitAirbnbEstime > 0 && <div className="chip">Airbnb <span>{fe(parsed.prixNuitAirbnbEstime)}/nuit · {parsed.occupancyAirbnbEstime}%</span></div>}
+                  {parsed.tensionLocative && <div className="chip">Tension <span>{parsed.tensionLocative}</span></div>}
+                  {parsed.negociationEstimee > 0 && <div className="okchip chip">Négo estimée <span>−{fe(parsed.negociationEstimee)}</span></div>}
                   {parsed.travauxEstimes > 0 && <div className="chip wchip">Travaux <span>{fe(parsed.travauxEstimes)}</span></div>}
                   {parsed.risqueAirbnbParis && <div className="chip achip">⚠ Risque Airbnb Paris</div>}
+                  {parsed.encadrementLoyers && <div className="chip wchip">⚠ Loyers encadrés</div>}
                 </div>
-                {(parsed.alertes || []).map((a: string, i: number) => (
-                  <div key={i} className="abox warning" style={{ marginTop: 7 }}><span className="aicon">⚠</span>{a}</div>
-                ))}
+                {(parsed.alertes || []).map((a: string, i: number) => <div key={i} className="abox warning" style={{ marginTop: 6 }}><span className="aicon">⚠</span>{a}</div>)}
+                {(parsed.opportunites || []).map((o: string, i: number) => <div key={i} className="abox info" style={{ marginTop: 5 }}><span className="aicon">✓</span>{o}</div>)}
+                {parsed.analyseExpert && <div className="expert-box"><strong>Analyse Expert Opus</strong>{parsed.analyseExpert}</div>}
                 {(parsed.pointsCles || []).length > 0 && (
                   <div style={{ marginTop: 9, fontSize: "0.75rem", color: "var(--text2)", lineHeight: 1.6 }}>
                     <div style={{ fontSize: "0.67rem", color: "var(--text3)", fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Points clés</div>
-                    {parsed.pointsCles.map((p: string, i: number) => <div key={i}>· {p}</div>)}
+                    {parsed.pointsCles.map((pt: string, i: number) => <div key={i}>· {pt}</div>)}
                   </div>
                 )}
               </div>
@@ -453,7 +512,7 @@ export default function App() {
 
             <div className="section">
               <div className="stitle">Données du bien</div>
-              <div className="grid3">
+              <div className="grid4">
                 <F label="Prix de vente" k="prix" suffix="€" />
                 <F label="Surface" k="surface" suffix="m²" />
                 <div className="field">
@@ -463,24 +522,47 @@ export default function App() {
                     {["A","B","C","D","E","F","G"].map(d => <option key={d} value={d}>{d}</option>)}
                   </select>
                 </div>
+                <div className="field">
+                  <label>Tension locative</label>
+                  <select value={inputs.tensionLocative} onChange={e => setIn("tensionLocative", e.target.value as any)}>
+                    <option value="faible">Faible (vacance 12%)</option>
+                    <option value="moyenne">Moyenne (vacance 8%)</option>
+                    <option value="forte">Forte (vacance 5%)</option>
+                    <option value="tres_forte">Très forte (vacance 3%)</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid4" style={{ marginTop: 9 }}>
                 <F label="Charges copro" k="charges" suffix="€/mois" />
                 <F label="Taxe foncière" k="taxeFonciere" suffix="€/an" />
+                <F label="Fonds travaux copro" k="fondsTravauxCopro" suffix="€/an" />
                 <F label="Frais agence" k="fraisAgencePct" suffix="%" step={0.5} />
               </div>
-              <div className="dvd" />
-              <div className="grid3">
+              <div className="grid4" style={{ marginTop: 9 }}>
                 <F label="Travaux prévus" k="travaux" suffix="€" />
                 <F label="Ameublement" k="ameublement" suffix="€" />
+                <F label="Frais garantie bancaire" k="fraisGarantie" suffix="€" />
                 <F label="Apport" k="apport" suffix="€" />
               </div>
+              <div className="toggle-row" style={{ marginTop: 10 }}>
+                <label>Encadrement des loyers (Paris, Lille, Lyon…)</label>
+                <label className="toggle">
+                  <input type="checkbox" checked={inputs.encadrementLoyers} onChange={e => setIn("encadrementLoyers", e.target.checked)} />
+                  <span className="tslider" />
+                </label>
+              </div>
+              {inputs.encadrementLoyers && (
+                <div style={{ marginTop: 9 }}><F label="Loyer max encadré HC" k="loyerMaxEncadre" suffix="€/mois" /></div>
+              )}
             </div>
 
             <div className="section">
               <div className="stitle">Revenus locatifs</div>
-              <div className="grid3">
+              <div className="grid4">
                 <F label="Loyer meublé HC" k="loyerEstime" suffix="€/mois" />
                 <F label="Prix nuit Airbnb" k="prixNuitAirbnb" suffix="€" />
                 <F label="Taux occupation" k="occupancyAirbnb" suffix="%" step={1} min={0} max={100} />
+                <F label="Taux GLI" k="tauxGLI" suffix="%" step={0.1} />
               </div>
               <div className="toggle-row" style={{ marginTop: 10 }}>
                 <label>Avec conciergerie Airbnb (22% des revenus)</label>
@@ -489,68 +571,62 @@ export default function App() {
                   <span className="tslider" />
                 </label>
               </div>
+              <div className="toggle-row">
+                <label>GLI — Garantie Loyers Impayés</label>
+                <label className="toggle">
+                  <input type="checkbox" checked={inputs.avecGLI} onChange={e => setIn("avecGLI", e.target.checked)} />
+                  <span className="tslider" />
+                </label>
+              </div>
             </div>
+
             <button className="btn btn-gold btn-full" onClick={handleCompute}>Calculer le modèle financier →</button>
           </>
         )}
 
-        {/* PARAMETRES */}
         {tab === "parametres" && (
           <>
             <div className="section">
               <div className="stitle">Financement</div>
-              <div className="grid3">
+              <div className="grid4">
                 <F label="Taux prêt" k="tauxPret" suffix="%" step={0.05} />
                 <F label="Durée prêt" k="dureePret" suffix="ans" />
                 <F label="Taux assurance" k="tauxAssurance" suffix="%" step={0.01} />
+                <F label="Frais comptable LMNP" k="fraisComptable" suffix="€/an" />
               </div>
             </div>
             <div className="section">
-              <div className="stitle">Hypothèses économiques</div>
-              <div className="grid3">
+              <div className="stitle">Hypothèses économiques (conservatrices)</div>
+              <div className="grid4">
                 <F label="Inflation loyers" k="inflationLoyer" suffix="%/an" step={0.1} />
                 <F label="Inflation charges" k="inflationCharges" suffix="%/an" step={0.1} />
                 <F label="Revalorisation prix" k="inflationPrix" suffix="%/an" step={0.1} />
-              </div>
-              <div className="grid2" style={{ marginTop: 9 }}>
-                <F label="Horizon" k="horizon" suffix="ans" />
-                <div className="field">
-                  <label>TMI</label>
-                  <select value={inputs.tmi} onChange={e => setIn("tmi", parseInt(e.target.value))}>
-                    {[11,30,41,45].map(t => <option key={t} value={t}>{t}%</option>)}
-                  </select>
-                </div>
+                <F label="Horizon de calcul" k="horizon" suffix="ans" />
               </div>
             </div>
-            <div className="section">
-              <div className="stitle">Profil emprunteur</div>
-              <div className="grid2">
-                <F label="Revenus bruts mensuels" k="revenuMensuelBrut" suffix="€" />
-                <F label="Mensualité RP actuelle" k="mensualiteRP" suffix="€" />
-              </div>
-              <div className="abox info" style={{ marginTop: 10 }}>
-                <span className="aicon">ℹ</span>
-                <div>Mensualité RP pré-remplie (SG, 4,05%). Taux d'endettement calculé vs règle HCSF 35%.</div>
+            <div className="abox info">
+              <span className="aicon">ℹ</span>
+              <div>Profil : {profil.prenom || "Non configuré"} · TMI {profil.tmi}% · Mensualité RP {fmt(profil.mensualiteRP)}€ · Revenus bruts {fmt(revenuMensuel)}€/mois.{" "}
+                <span style={{ cursor: "pointer", color: "var(--gold)", textDecoration: "underline" }} onClick={() => setShowProfil(true)}>Modifier →</span>
               </div>
             </div>
             <button className="btn btn-gold btn-full" onClick={handleCompute}>Recalculer →</button>
           </>
         )}
 
-        {/* RESULTATS */}
         {tab === "resultats" && r && (() => {
-          const edColor = r.tauxEndettement > 35 ? "var(--red2)" : r.tauxEndettement > 30 ? "var(--amber2)" : "var(--green2)";
-          const bestCF = Math.max(r.cashflowLLDAn, r.cfSCIIRAn, r.cfSCIISAn);
+          const edColor = r.tauxEndettement > 35 ? "var(--red2)" : r.tauxEndettement > 32 ? "var(--amber2)" : "var(--green2)";
+          const bestCF = Math.max(r.cfDirectLMNP, r.cfSCIIR, r.cfSCIIS);
           return (
             <>
               <div className="score-banner">
                 <div className="score-circle" style={{ color: r.scoreColor, borderColor: r.scoreColor }}>
-                  <span className="snum" style={{ color: r.scoreColor }}>{r.score}</span>
+                  <span className="snum" style={{ color: r.scoreColor }}>{r.scoreOpportunite}</span>
                   <span className="sten">/100</span>
                 </div>
                 <div className="sinfo">
                   <h3 style={{ color: r.scoreColor }}>{r.scoreLabel}</h3>
-                  <p>Score conservateur · rendement, cashflow, endettement, DPE, TRI {inputs.horizon} ans</p>
+                  <p>Score conservateur · rendement, cashflow, endettement, DPE, TRI {inputs.horizon} ans, stress test, tension locative</p>
                   <div className="ebar">
                     <div className="elabel">
                       <span>Taux d'endettement total</span>
@@ -561,26 +637,59 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+                <div style={{ textAlign: "right", minWidth: 110 }}>
+                  <div style={{ fontSize: "0.65rem", color: "var(--text3)", fontFamily: "var(--mono)", textTransform: "uppercase", marginBottom: 3 }}>Break-even</div>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: "1rem", color: r.breakEven <= inputs.horizon ? "var(--green2)" : "var(--amber2)" }}>
+                    {r.breakEven <= inputs.horizon ? `Année ${r.breakEven}` : "> horizon"}
+                  </div>
+                  <div style={{ fontSize: "0.65rem", color: "var(--text3)", fontFamily: "var(--mono)", marginTop: 2 }}>CF cumulé ≥ 0</div>
+                </div>
               </div>
 
-              {r.margeEndettement < 0 && <div className="abox danger"><span className="aicon">🚫</span><div><strong>Taux d'endettement dépassé.</strong> Dépasse la règle HCSF 35%. Augmentez l'apport ({fe(-r.margeEndettement)}/mois à libérer).</div></div>}
-              {(inputs.dpe === "F" || inputs.dpe === "G") && <div className="abox danger"><span className="aicon">⚡</span><div><strong>DPE {inputs.dpe} — Passoire thermique.</strong> Location interdite. Travaux obligatoires ({fe(r.travauxDPE)} estimés, +15% imprévus inclus).</div></div>}
-              {parsed?.risqueAirbnbParis && <div className="abox warning"><span className="aicon">⚠</span><div><strong>Risque Airbnb Paris.</strong> Vérifiez le règlement PLU. Quota 120 nuits/an en résidence principale. Possible interdiction en résidence secondaire.</div></div>}
+              {r.margeEndettement < 0 && <div className="abox danger"><span className="aicon">🚫</span><div><strong>Taux d'endettement dépassé.</strong> Augmentez l'apport de {fe(-r.margeEndettement * 12 * 5)} ou réduisez la durée.</div></div>}
+              {(inputs.dpe === "F" || inputs.dpe === "G") && <div className="abox danger"><span className="aicon">⚡</span><div><strong>DPE {inputs.dpe} — Passoire thermique.</strong> Location interdite. Travaux obligatoires ({fe(r.travauxDPE)} estimés).</div></div>}
+              {inputs.encadrementLoyers && inputs.loyerMaxEncadre > 0 && inputs.loyerEstime > inputs.loyerMaxEncadre && <div className="abox warning"><span className="aicon">⚠</span><div><strong>Loyer encadré.</strong> Plafond légal : {fe(inputs.loyerMaxEncadre)}/mois appliqué dans le modèle.</div></div>}
+              {parsed?.risqueAirbnbParis && <div className="abox warning"><span className="aicon">⚠</span><div><strong>Risque Airbnb Paris.</strong> {parsed.risqueReglementaireAirbnb || "Vérifiez le règlement PLU."}</div></div>}
 
               <div className="section">
-                <div className="stitle">Acquisition</div>
+                <div className="stitle">Acquisition & Financement</div>
                 <div className="mgrid">
                   <div className="mcard"><div className="mlabel">Prix FAI</div><div className="mval">{fe(inputs.prix)}</div></div>
-                  <div className="mcard"><div className="mlabel">Frais notaire</div><div className="mval warn">{fe(r.fraisNotaire)}</div><div className="msub">8,2%</div></div>
-                  <div className="mcard"><div className="mlabel">Travaux total</div><div className="mval warn">{fe(r.travauxTot)}</div><div className="msub">+15% imprévus</div></div>
+                  <div className="mcard"><div className="mlabel">Frais notaire</div><div className="mval warn">{fe(r.fraisNotaire)}</div><div className="msub">8,2% ancien</div></div>
+                  <div className="mcard"><div className="mlabel">Travaux + DPE</div><div className="mval warn">{fe(r.travauxTotal)}</div><div className="msub">+15% imprévus</div></div>
+                  <div className="mcard"><div className="mlabel">Garantie + courtier</div><div className="mval">{fe(r.fraisGarantie + r.fraisCourtier)}</div></div>
                   <div className="mcard"><div className="mlabel">Montant emprunté</div><div className="mval">{fe(r.montantEmprunte)}</div></div>
                   <div className="mcard"><div className="mlabel">Mensualité totale</div><div className="mval">{fe(r.mensualiteTotale)}</div><div className="msub">crédit + assurance</div></div>
+                  <div className="mcard"><div className="mlabel">Coût total crédit</div><div className="mval neg">{fe(r.coutTotalCredit)}</div></div>
                   <div className="mcard"><div className="mlabel">Cash sorti</div><div className="mval neg">{fe(r.totalInvesti)}</div><div className="msub">apport+travaux+meubles</div></div>
+                  <div className="mcard"><div className="mlabel">Total acquisition</div><div className="mval">{fe(r.totalAcquisition)}</div></div>
+                </div>
+              </div>
+
+              <div className="section">
+                <div className="stitle">Patrimoine à horizon {inputs.horizon} ans</div>
+                <div className="mgrid">
+                  <div className="mcard"><div className="mlabel">Valeur estimée</div><div className="mval">{fe(inputs.prix * Math.pow(1 + inputs.inflationPrix / 100, inputs.horizon))}</div><div className="msub">+{fp(inputs.inflationPrix)}/an</div></div>
+                  <div className="mcard"><div className="mlabel">Plus-value brute</div><div className="mval pos">{fe(r.plusValueBrute)}</div></div>
+                  <div className="mcard"><div className="mlabel">Impôt plus-value</div><div className="mval neg">{fe(r.impotPlusValue)}</div><div className="msub">après abattements</div></div>
+                  <div className="mcard"><div className="mlabel">Patrimoine net</div><div className="mval pos">{fe(r.patrimoineNetHorizon)}</div><div className="msub">valeur − CRD − impôt PV</div></div>
+                  <div className="mcard"><div className="mlabel">CF LLD cumulé</div><div className={`mval ${r.lld.cashflowAnnuel * inputs.horizon >= 0 ? "pos" : "neg"}`}>{fe(r.lld.cashflowAnnuel * inputs.horizon)}</div></div>
+                  <div className="mcard"><div className="mlabel">Break-even</div><div className={`mval ${r.breakEven <= inputs.horizon ? "pos" : "warn"}`}>{r.breakEven <= inputs.horizon ? `An ${r.breakEven}` : "> horizon"}</div></div>
+                </div>
+              </div>
+
+              <div className="section">
+                <div className="stitle">Stress Test</div>
+                <div className="stress-grid">
+                  <div className="stress-card"><h5>Taux +1%</h5><div className={`sv ${r.stressTest.tauxPlus1 >= 0 ? "pos" : "neg"}`}>{fe(r.stressTest.tauxPlus1)}/mois</div><div style={{ fontSize: "0.67rem", color: "var(--text3)", marginTop: 3 }}>Impact si taux +1pt</div></div>
+                  <div className="stress-card"><h5>Vacance +5%</h5><div className={`sv ${r.stressTest.vacancePlus5 >= 0 ? "pos" : "neg"}`}>{fe(r.stressTest.vacancePlus5)}/mois</div><div style={{ fontSize: "0.67rem", color: "var(--text3)", marginTop: 3 }}>Vacance supplémentaire</div></div>
+                  <div className="stress-card"><h5>Loyer −10%</h5><div className={`sv ${r.stressTest.loyerMoins10 >= 0 ? "pos" : "neg"}`}>{fe(r.stressTest.loyerMoins10)}/mois</div><div style={{ fontSize: "0.67rem", color: "var(--text3)", marginTop: 3 }}>Loyer sous-estimé</div></div>
+                  <div className="stress-card" style={{ borderColor: r.stressTest.cumulatif >= 0 ? "var(--green)" : "var(--red)" }}><h5>Scénario cumulatif ⚠</h5><div className={`sv ${r.stressTest.cumulatif >= 0 ? "pos" : "neg"}`}>{fe(r.stressTest.cumulatif)}/mois</div><div style={{ fontSize: "0.67rem", color: "var(--text3)", marginTop: 3 }}>Taux+1% + vacance+5% + loyer-10%</div></div>
                 </div>
               </div>
 
               <div className="stabs">
-                {[["lld","📋 Location meublée"],["airbnb","✈ Airbnb / LCD"],["structure","⚖ Structures"]].map(([id,label]) => (
+                {[["lld","📋 LLD Meublé"],["airbnb","✈ Airbnb"],["structure","⚖ Structures"]].map(([id,label]) => (
                   <button key={id} className={`stab ${sTab === id ? "active" : ""}`} onClick={() => setSTab(id)}>{label}</button>
                 ))}
               </div>
@@ -588,121 +697,143 @@ export default function App() {
               {sTab === "lld" && (
                 <div className="sp">
                   <div className="sp-hdr">
-                    <div><h3>Location Longue Durée — Meublé LMNP</h3><p>Vacance 8% · Gestion 8% · Provision 0,5%/an</p></div>
-                    <div style={{ textAlign: "right" }}>
-                      <div className="bigcf-l">Cashflow mensuel net</div>
-                      <div className={`bigcf ${r.cashflowLLDMois >= 0 ? "pos" : "neg"}`}>{fe(r.cashflowLLDMois)}</div>
-                    </div>
+                    <div><h3>Location Longue Durée — Meublé LMNP Réel</h3><p>Tension {inputs.tensionLocative} · GLI {inputs.avecGLI ? "incluse" : "exclue"} · Gestion {profil.gestionDirecte ? "directe" : "agence 8%"}</p></div>
+                    <div style={{ textAlign: "right" }}><div className="bigcf-l">Cashflow mensuel net</div><div className={`bigcf ${r.lld.cashflowMensuel >= 0 ? "pos" : "neg"}`}>{fe(r.lld.cashflowMensuel)}</div></div>
                   </div>
                   <div className="mgrid">
-                    <div className="mcard"><div className="mlabel">Rendement brut</div><div className="mval">{fp(r.rendBrutLLD)}</div></div>
-                    <div className="mcard"><div className="mlabel">Rendement net-net</div><div className={`mval ${r.rendNetLLD >= 4 ? "pos" : r.rendNetLLD >= 2 ? "warn" : "neg"}`}>{fp(r.rendNetLLD)}</div></div>
-                    <div className="mcard"><div className="mlabel">TRI {inputs.horizon} ans</div><div className={`mval ${r.triLLD >= 6 ? "pos" : r.triLLD >= 3 ? "warn" : "neg"}`}>{fp(r.triLLD)}</div></div>
+                    <div className="mcard"><div className="mlabel">Rendement brut</div><div className="mval">{fp(r.lld.rendementBrut)}</div></div>
+                    <div className="mcard"><div className="mlabel">Rendement net-net</div><div className={`mval ${r.lld.rendementNet >= 4 ? "pos" : r.lld.rendementNet >= 2 ? "warn" : "neg"}`}>{fp(r.lld.rendementNet)}</div></div>
+                    <div className="mcard"><div className="mlabel">TRI {inputs.horizon} ans</div><div className={`mval ${r.lld.tri >= 6 ? "pos" : r.lld.tri >= 3 ? "warn" : "neg"}`}>{fp(r.lld.tri)}</div></div>
                   </div>
                   <table className="bktable">
                     <tbody>
-                      <tr><td>Loyer brut annuel</td><td>{fe(inputs.loyerEstime * 12)}</td></tr>
-                      <tr className="sub"><td>Vacance 8%</td><td className="neg">− {fe(r.vacanceLLD)}</td></tr>
-                      <tr><td>= Revenu encaissé</td><td>{fe(r.revenuBrutLLD)}</td></tr>
-                      <tr className="sub"><td>Charges copro</td><td className="neg">− {fe(r.chargesAn)}</td></tr>
-                      <tr className="sub"><td>Taxe foncière</td><td className="neg">− {fe(inputs.taxeFonciere)}</td></tr>
-                      <tr className="sub"><td>Assurance PNO</td><td className="neg">− {fe(r.assurancePNO)}</td></tr>
-                      <tr className="sub"><td>Gestion locative 8%</td><td className="neg">− {fe(r.gestionLocative)}</td></tr>
-                      <tr className="sub"><td>Provision travaux</td><td className="neg">− {fe(r.provisionTravaux)}</td></tr>
-                      <tr className="sub"><td>Mensualité crédit ×12</td><td className="neg">− {fe(r.mensualiteTotale * 12)}</td></tr>
-                      <tr className="sub"><td>Impôt LMNP réel</td><td className="neg">− {fe(r.impotLMNP)}</td></tr>
-                      <tr className="trow"><td>= Cashflow net annuel</td><td className={r.cashflowLLDAn >= 0 ? "pos" : "neg"}>{fe(r.cashflowLLDAn)}</td></tr>
+                      {Object.entries(r.lld.detailCharges).map(([k, v]) => (
+                        <tr key={k} className={(v as number) < 0 ? "sub" : ""}>
+                          <td>{k}</td>
+                          <td className={(v as number) < 0 ? "neg" : ""}>{(v as number) < 0 ? "− " : ""}{fe(Math.abs(v as number))}</td>
+                        </tr>
+                      ))}
+                      <tr className="trow"><td>= Cashflow net annuel</td><td className={r.lld.cashflowAnnuel >= 0 ? "pos" : "neg"}>{fe(r.lld.cashflowAnnuel)}</td></tr>
                     </tbody>
                   </table>
                   <div className="dvd" />
-                  <div style={{ fontSize: "0.75rem", color: "var(--text3)" }}>
-                    <div style={{ color: "var(--text2)", marginBottom: 6 }}>Comparatif régimes fiscaux (cashflow mensuel)</div>
-                    <div className="chips">
-                      <div className="chip">LMNP Réel <span className={r.cashflowLLDMois >= 0 ? "pos" : "neg"}>{fe(r.cashflowLLDMois)}/mois</span></div>
-                      <div className="chip">Micro-BIC 50% <span className={r.cashflowMicroBIC >= 0 ? "pos" : "neg"}>{fe(r.cashflowMicroBIC)}/mois</span></div>
-                    </div>
-                    <div style={{ marginTop: 7, color: "var(--text2)" }}>✦ Amortissements déductibles : {fe(r.totalAmort)}/an</div>
-                  </div>
+                  <div style={{ fontSize: "0.74rem", color: "var(--text2)" }}>✦ Amortissements LMNP : {fe(r.totalAmort)}/an · Économie fiscale : ~{fe(r.totalAmort * profil.tmi / 100)}/an</div>
                 </div>
               )}
 
               {sTab === "airbnb" && (
                 <div className="sp">
                   <div className="sp-hdr">
-                    <div><h3>Airbnb / Location Courte Durée</h3><p>{fmt(r.nuitesAn, 0)} nuits/an · {inputs.avecConciergerie ? "Conciergerie 22%" : "Autogestion"} · −10% conservateur</p></div>
-                    <div style={{ textAlign: "right" }}>
-                      <div className="bigcf-l">Cashflow mensuel net</div>
-                      <div className={`bigcf ${r.cfAirbnbMois >= 0 ? "pos" : "neg"}`}>{fe(r.cfAirbnbMois)}</div>
-                    </div>
+                    <div><h3>Airbnb / Location Courte Durée</h3><p>{inputs.avecConciergerie ? "Conciergerie 22%" : "Autogestion 4%"} · −10% conservateur</p></div>
+                    <div style={{ textAlign: "right" }}><div className="bigcf-l">Cashflow mensuel net</div><div className={`bigcf ${r.airbnb.cashflowMensuel >= 0 ? "pos" : "neg"}`}>{fe(r.airbnb.cashflowMensuel)}</div></div>
                   </div>
                   <div className="mgrid">
-                    <div className="mcard"><div className="mlabel">CA Airbnb annuel</div><div className="mval">{fe(r.revBrutAirbnb)}</div></div>
-                    <div className="mcard"><div className="mlabel">Rendement brut</div><div className={`mval ${r.rendBrutAirbnb >= 8 ? "pos" : "warn"}`}>{fp(r.rendBrutAirbnb)}</div></div>
-                    <div className="mcard"><div className="mlabel">TRI {inputs.horizon} ans</div><div className={`mval ${r.triAirbnb >= 6 ? "pos" : r.triAirbnb >= 3 ? "warn" : "neg"}`}>{fp(r.triAirbnb)}</div></div>
+                    <div className="mcard"><div className="mlabel">CA Airbnb annuel</div><div className="mval">{fe(r.airbnb.detailCharges["CA brut Airbnb"] as number)}</div></div>
+                    <div className="mcard"><div className="mlabel">Rendement brut</div><div className={`mval ${r.airbnb.rendementBrut >= 8 ? "pos" : "warn"}`}>{fp(r.airbnb.rendementBrut)}</div></div>
+                    <div className="mcard"><div className="mlabel">TRI {inputs.horizon} ans</div><div className={`mval ${r.airbnb.tri >= 6 ? "pos" : r.airbnb.tri >= 3 ? "warn" : "neg"}`}>{fp(r.airbnb.tri)}</div></div>
                   </div>
                   <table className="bktable">
                     <tbody>
-                      <tr><td>CA brut Airbnb</td><td>{fe(r.revBrutAirbnb)}</td></tr>
-                      <tr className="sub"><td>Frais plateforme 3%</td><td className="neg">− {fe(r.fraisPlateformeAirbnb)}</td></tr>
-                      {inputs.avecConciergerie
-                        ? <tr className="sub"><td>Conciergerie 22%</td><td className="neg">− {fe(r.fraisConciergerie)}</td></tr>
-                        : <tr className="sub"><td>Autogestion / outils 4%</td><td className="neg">− {fe(r.fraisAutoGestion)}</td></tr>}
-                      <tr className="sub"><td>Linge + consommables + énergie</td><td className="neg">− {fe(r.chargesVarAirbnb - r.fraisPlateformeAirbnb - r.fraisConciergerie - r.fraisAutoGestion)}</td></tr>
-                      <tr className="sub"><td>Charges + TF + PNO</td><td className="neg">− {fe(r.chargesAn + inputs.taxeFonciere + r.assurancePNO)}</td></tr>
-                      <tr className="sub"><td>Provision travaux</td><td className="neg">− {fe(r.provisionTravaux)}</td></tr>
-                      <tr className="sub"><td>Mensualité crédit ×12</td><td className="neg">− {fe(r.mensualiteTotale * 12)}</td></tr>
-                      <tr className="sub"><td>Impôt LMNP réel</td><td className="neg">− {fe(r.imposAirbnbReel)}</td></tr>
-                      <tr className="trow"><td>= Cashflow net annuel</td><td className={r.cfAirbnbAn >= 0 ? "pos" : "neg"}>{fe(r.cfAirbnbAn)}</td></tr>
+                      {Object.entries(r.airbnb.detailCharges).map(([k, v]) => (
+                        <tr key={k} className={(v as number) < 0 ? "sub" : ""}>
+                          <td>{k}</td>
+                          <td className={(v as number) < 0 ? "neg" : ""}>{(v as number) < 0 ? "− " : ""}{fe(Math.abs(v as number))}</td>
+                        </tr>
+                      ))}
+                      <tr className="trow"><td>= Cashflow net annuel</td><td className={r.airbnb.cashflowAnnuel >= 0 ? "pos" : "neg"}>{fe(r.airbnb.cashflowAnnuel)}</td></tr>
                     </tbody>
                   </table>
-                  {parsed?.risqueAirbnbParis && <div className="abox danger" style={{ marginTop: 10 }}><span className="aicon">🚫</span><div><strong>Paris — Vérification obligatoire.</strong> Numéro d'enregistrement + quota 120 nuits/an. Résidence secondaire : interdiction dans plusieurs arrondissements.</div></div>}
+                  {parsed?.risqueAirbnbParis && <div className="abox danger" style={{ marginTop: 10 }}><span className="aicon">🚫</span><div><strong>Paris — Vérification obligatoire.</strong> Ce scénario peut être illégal.</div></div>}
                 </div>
               )}
 
               {sTab === "structure" && (
                 <div className="sp">
-                  <div className="stitle" style={{ marginBottom: 10 }}>Comparatif structures juridiques — LLD</div>
-                  <p style={{ fontSize: "0.77rem", color: "var(--text2)", marginBottom: 4 }}>Cashflow annuel après impôt</p>
+                  <div className="stitle" style={{ marginBottom: 10 }}>Comparatif structures juridiques</div>
                   <div className="sgrid">
                     {[
-                      { id: "lmnp", title: "Détention directe LMNP Réel", cf: r.cashflowLLDAn, desc: "Amortissement bien + mobilier déductible. Déficit imputable sur BIC. Meilleur régime pour TMI 30% sur 1-2 biens." },
-                      { id: "sciir", title: "SCI à l'IR", cf: r.cfSCIIRAn, desc: "Revenus fonciers, pas d'amortissement. PS 17,2% en sus. Utile pour transmission patrimoniale mais fiscalement moins avantageux." },
-                      { id: "sciis", title: "SCI à l'IS", cf: r.cfSCIISAn, desc: "IS 15% jusqu'à 42 500€. Amortissement possible. Mais double imposition dividendes (PFU 30%) + à la revente." },
-                    ].map(({ id, title, cf, desc }) => {
-                      const isBest = cf === bestCF;
-                      return (
-                        <div key={id} className={`scard ${isBest ? "best" : ""}`}>
-                          <h4>{title}{isBest && <span className="bbadge">✓ Optimal</span>}</h4>
-                          <div className={`scf ${cf >= 0 ? "pos" : "neg"}`}>{fe(cf)}/an</div>
-                          <p>{desc}</p>
-                        </div>
-                      );
-                    })}
+                      { title: "LMNP Direct Réel", cf: r.cfDirectLMNP, desc: "Amortissement déductible. Déficit BIC imputable. Optimal pour 1-2 biens TMI 30%." },
+                      { title: "SCI à l'IR", cf: r.cfSCIIR, desc: "Foncier réel, pas d'amortissement. PS 17,2% en sus. Pour transmission patrimoniale." },
+                      { title: "SCI à l'IS", cf: r.cfSCIIS, desc: "IS 15% / 25%. Amortissement possible. Double imposition à la revente et sur dividendes." },
+                    ].map(({ title, cf, desc }) => (
+                      <div key={title} className={`scard ${cf === bestCF ? "best" : ""}`}>
+                        <h4>{title}{cf === bestCF && <span className="bbadge">✓ Optimal</span>}</h4>
+                        <div className={`scf ${cf >= 0 ? "pos" : "neg"}`}>{fe(cf)}/an</div>
+                        <p>{desc}</p>
+                      </div>
+                    ))}
                   </div>
-                  <div className="abox info" style={{ marginTop: 12 }}>
-                    <span className="aicon">💡</span>
-                    <div><strong>Recommandation :</strong> Avec TMI 30% et un premier investissement locatif, la détention directe LMNP au réel est quasi systématiquement optimale. SCI IS pertinente à partir de 3+ biens avec réinvestissement des bénéfices. Consultez un expert-comptable spécialisé LMNP.</div>
-                  </div>
+                  <div className="abox info" style={{ marginTop: 10 }}><span className="aicon">💡</span><div>Avec TMI {profil.tmi}%, la <strong>détention directe LMNP réel</strong> est quasi systématiquement optimale sur 1-2 biens. Consultez un expert-comptable LMNP.</div></div>
+                  <div className="abox blue" style={{ marginTop: 7 }}><span className="aicon">📋</span><div><strong>Dispositif Jeanbrun 2026 :</strong> Remplace Pinel (voté jan. 2026). Amortissement 3,5-5,5% dans l'ancien rénové. Rendements nets jusqu'à 8-9% dans certaines villes moyennes.</div></div>
                 </div>
               )}
             </>
           );
         })()}
 
-        {/* AMORT */}
+        {tab === "projections" && r && (
+          <>
+            <div className="section">
+              <div className="stitle">Projections LLD — {inputs.horizon} ans</div>
+              <div style={{ overflowX: "auto" }}>
+                <table className="proj-table">
+                  <thead><tr><th>Année</th><th>Loyer brut</th><th>Charges</th><th>Intérêts</th><th>Impôt</th><th>Cashflow</th><th>CF cumulé</th><th>Valeur bien</th><th>Patrimoine net</th></tr></thead>
+                  <tbody>
+                    {r.lld.projections.map(row => (
+                      <tr key={row.annee}>
+                        <td>An {row.annee}</td>
+                        <td>{fe(row.loyerBrut)}</td>
+                        <td className="neg">{fe(row.chargesTotal)}</td>
+                        <td className="neg">{fe(row.interets)}</td>
+                        <td className="neg">{fe(row.impot)}</td>
+                        <td className={row.cashflow >= 0 ? "pos" : "neg"}>{fe(row.cashflow)}</td>
+                        <td className={row.cashflowCumule >= 0 ? "pos" : "neg"}>{fe(row.cashflowCumule)}</td>
+                        <td>{fe(row.valeurBien)}</td>
+                        <td className="pos">{fe(row.patrimoineNet)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="section">
+              <div className="stitle">Projections Airbnb — {inputs.horizon} ans</div>
+              <div style={{ overflowX: "auto" }}>
+                <table className="proj-table">
+                  <thead><tr><th>Année</th><th>CA Airbnb</th><th>Charges var.</th><th>Intérêts</th><th>Impôt</th><th>Cashflow</th><th>CF cumulé</th><th>Patrimoine net</th></tr></thead>
+                  <tbody>
+                    {r.airbnb.projections.map(row => (
+                      <tr key={row.annee}>
+                        <td>An {row.annee}</td>
+                        <td>{fe(row.loyerBrut)}</td>
+                        <td className="neg">{fe(row.chargesTotal)}</td>
+                        <td className="neg">{fe(row.interets)}</td>
+                        <td className="neg">{fe(row.impot)}</td>
+                        <td className={row.cashflow >= 0 ? "pos" : "neg"}>{fe(row.cashflow)}</td>
+                        <td className={row.cashflowCumule >= 0 ? "pos" : "neg"}>{fe(row.cashflowCumule)}</td>
+                        <td className="pos">{fe(row.patrimoineNet)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
+
         {tab === "amort" && r && (
           <div className="section">
             <div className="stitle">Tableau d'amortissement</div>
             <div className="mgrid" style={{ marginBottom: 14 }}>
               <div className="mcard"><div className="mlabel">Capital emprunté</div><div className="mval">{fe(r.montantEmprunte)}</div></div>
-              <div className="mcard"><div className="mlabel">Mensualité totale</div><div className="mval">{fe(r.mensualiteTotale)}</div></div>
+              <div className="mcard"><div className="mlabel">Mensualité totale</div><div className="mval">{fe(r.mensualiteTotale)}</div><div className="msub">crédit + assurance</div></div>
               <div className="mcard"><div className="mlabel">Coût total crédit</div><div className="mval neg">{fe(r.coutTotalCredit)}</div></div>
             </div>
             <div style={{ overflowX: "auto" }}>
               <table className="atable">
                 <thead><tr><th>Année</th><th>Intérêts</th><th>Capital remb.</th><th>Capital restant</th></tr></thead>
                 <tbody>
-                  {r.amortTable.map((row: any, i: number) => {
+                  {r.amortTable.map((row, i) => {
                     const prev = r.amortTable[i - 1];
                     const showSep = i > 0 && row.an - prev.an > 1;
                     return (
@@ -720,7 +851,7 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-            <p style={{ fontSize: "0.68rem", color: "var(--text3)", marginTop: 8, fontFamily: "var(--mono)" }}>5 premières + 5 dernières années · Taux {inputs.tauxPret}% · {inputs.dureePret} ans</p>
+            <p style={{ fontSize: "0.68rem", color: "var(--text3)", marginTop: 8, fontFamily: "var(--mono)" }}>5 premières + 5 dernières années · {inputs.tauxPret}% · {inputs.dureePret} ans</p>
           </div>
         )}
       </div>
