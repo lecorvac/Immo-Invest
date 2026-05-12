@@ -185,7 +185,7 @@ function computeModel(p: Inputs) {
   };
 }
 
-async function analyzeWithAI(text: 
+async function analyzeWithAI(text: string) {
 const response = await fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
