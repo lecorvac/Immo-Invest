@@ -208,7 +208,7 @@ export function computeModel(inputs: InputsBien, profil: ProfilInvestisseur): Re
   // ─────────────────────────────────────────────
   // SCÉNARIO AIRBNB
   // ─────────────────────────────────────────────
-  const nuitesAn = 365 * (occupancyAirbnb / 100) * 0.9;
+const nuitesAn = occupancyAirbnb > 0 ? 365 * (occupancyAirbnb / 100) * 0.9 : 0;
   const revBrutAirbnb = nuitesAn * prixNuitAirbnb;
   const fraisPlateAirbnb = revBrutAirbnb * 0.03;
   const fraisConcierge = avecConciergerie ? revBrutAirbnb * 0.22 : revBrutAirbnb * 0.04;
