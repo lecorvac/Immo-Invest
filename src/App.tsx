@@ -936,7 +936,6 @@ export default function App() {
                 </div>
               )}
 
-              <Chat results={r} inputs={inputs} profil={profil} />
             </>
           );
         })()}
@@ -1041,6 +1040,7 @@ export default function App() {
           </div>
         )}
       </div>
+<Chat results={r ?? null} inputs={inputs} profil={profil} />
     </>
   );
 }
