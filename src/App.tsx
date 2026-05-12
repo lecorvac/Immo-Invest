@@ -17,7 +17,7 @@ function saveProfil(p: ProfilInvestisseur) {
 
 // ─── AI ──────────────────────────────────────────────────────────────────────
 async function analyzeAnnonce(text: string, mode: "normal" | "approfondi"): Promise<any> {
-  const model = mode === "approfondi" ? "claude-opus-4-5" : "claude-sonnet-4-20250514";
+  const model = mode === "approfondi" ? "claude-opus-4-5" : "claude-sonnet-4-5";
   const response = await fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
